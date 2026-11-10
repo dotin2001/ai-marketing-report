@@ -1,0 +1,11 @@
+{
+  "github": {
+    "repository": "dotin2001/ai-marketing-report",
+    "projectOwner": "dotin2001",
+    "projectNumber": 2,
+    "statusField": "Status",
+    "todoOption": "Todo",
+    "doneOption": "Done"
+  },
+  "runtimeDirectory": ".ai-local"
+}

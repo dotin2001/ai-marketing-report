@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-local-verification-v1",
+  "title": "AI Local Verification Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "overallVerdict", "results"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "overallVerdict": { "enum": ["passed", "failed"] },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "verdict", "evidence", "commandEvidenceIds", "rationale"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "verdict": { "enum": ["passed", "failed", "not_applicable"] },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "commandEvidenceIds": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "rationale": { "type": "string" }
+        }
+      }
+    }
+  }
+}

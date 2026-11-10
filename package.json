@@ -1,0 +1,14 @@
+{
+  "name": "ai-marketing-report",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ai:local": "node scripts/ai-local.mjs",
+    "test": "node --test scripts/ai-local/__tests__/*.test.mjs",
+    "check": "node scripts/ai-local/check.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
