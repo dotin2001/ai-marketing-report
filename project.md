@@ -279,6 +279,209 @@ All user-visible resources inherit ownership from the report. The backend must v
 
 The concrete authentication mechanism must be selected before backend implementation. Until then, APIs should depend on an authenticated-principal interface so ownership rules do not depend on a specific provider.
 
+## Versioned API Contract
+
+The public MVP API is rooted at `/api/v1`. The OpenSpec capability is normative until the backend exists; Stage 2 must implement strict Pydantic request and response models and generate OpenAPI 3.1 from those same runtime models rather than maintaining a separate hand-written schema.
+
+### Envelopes and scalar serialization
+
+- A single JSON resource uses `{ "data": <resource> }`.
+- A JSON collection uses `{ "data": [<resource>], "page": { "limit", "has_more", "next_cursor" } }`.
+- A successful operation with no representation returns `204` with no body.
+- Every JSON error uses `{ "error": { "code", "message", "request_id", "retryable", "details", "context" } }`.
+- Public identifiers are canonical lowercase UUID strings. Calendar dates are `YYYY-MM-DD`; instants are RFC 3339 UTC strings with a `Z` suffix.
+- Exact decimals and exact metric input totals are base-10 JSON strings. Revisions, attempt ordinals, version numbers, and other counters are positive JSON integers, except that `expected_revision: 0` explicitly means that no prior import configuration exists.
+- Checksums use `{ "algorithm": "sha256", "value": "<lowercase-digest>" }`. Enums are lowercase snake-case strings fixed by the v1 schema.
+- A nullable field is present as JSON `null` only where its schema declares nullability; otherwise an absent optional value is omitted. Clients ignore unknown response fields for additive compatibility, but mutation schemas reject unknown request fields with `422 validation_failed`.
+
+All response models are ownership-safe views, never ORM models. General JSON responses must not expose credentials, authorization tokens, raw provider payloads, database errors, internal object keys, unrestricted prompts, unrestricted source content, or signed URLs. An authorized PDF download may return a `303` with a short-lived signed location, but that location is not part of a general resource representation.
+
+### Endpoint matrix
+
+Paths in this table are relative to `/api/v1`. Nested paths retain `report_id` and, where relevant, `version_id` even when the child identifier is globally unique so owner authorization and parent consistency remain explicit and testable. Every operation requires an authenticated principal and authorizes through the report owner. An unknown identifier and a cross-owner identifier both return the same `404 resource_not_found` shape and neither starts work nor mutates state.
+
+| Method and path | Request | Success | Repetition/concurrency contract |
+|---|---|---|---|
+| `POST /reports` | `CreateReportRequest` | `201 ReportDetail` | Required idempotency key |
+| `GET /reports` | `PageQuery` | `200 Page<ReportSummary>` | None |
+| `GET /reports/{report_id}` | None | `200 ReportDetail` | None |
+| `PATCH /reports/{report_id}/draft` | `UpdateDraftRequest` | `200 DraftDetail` | Required expected revision; idempotency key optional |
+| `POST /reports/{report_id}/sources/text` | `CreateTextSourceRequest` | `201 SourceDetail` | Required idempotency key |
+| `POST /reports/{report_id}/sources/csv` | Multipart `file` | `201 SourceDetail` | Required idempotency key |
+| `GET /reports/{report_id}/sources/{source_id}` | None | `200 SourceDetail` | None |
+| `GET /reports/{report_id}/sources/{source_id}/preview` | `PreviewQuery` | `200 SourcePreview` | None |
+| `PUT /reports/{report_id}/sources/{source_id}/import-configuration` | `PutImportConfigurationRequest` | `200 ImportConfiguration` | Required expected revision; idempotency key optional |
+| `POST /reports/{report_id}/sources/{source_id}/import-configuration/validate` | `ValidateImportRequest` | `200 ImportValidation` | Bound to source and configuration revisions |
+| `POST /reports/{report_id}/sources/{source_id}/import-configuration/confirm` | `ConfirmImportRequest` | `200 ConfirmedImport` | Required idempotency key and exact reviewed revision |
+| `POST /reports/{report_id}/sources/{source_id}/review-confirmation` | `ConfirmTextReviewRequest` | `200 ConfirmedSourceReview` | Required idempotency key and exact review revision |
+| `GET /reports/{report_id}/datasets/current` | None | `200 DatasetDetail` | None |
+| `GET /reports/{report_id}/datasets/{dataset_id}` | None | `200 DatasetDetail` | None |
+| `GET /reports/{report_id}/datasets/{dataset_id}/rows` | `PageQuery` | `200 Page<CanonicalRow>` | None |
+| `GET /reports/{report_id}/datasets/{dataset_id}/metrics` | `MetricQuery` | `200 MetricResultSet` | None |
+| `POST /reports/{report_id}/analysis-jobs` | `CreateAnalysisJobRequest` | `202 AnalysisJob` | Required idempotency key and expected draft revision |
+| `GET /reports/{report_id}/analysis-jobs` | `PageQuery` | `200 Page<AnalysisJobSummary>` | None |
+| `GET /reports/{report_id}/analysis-jobs/{job_id}` | None | `200 AnalysisJobDetail` | None |
+| `POST /reports/{report_id}/analysis-jobs/{job_id}/retry` | `RetryAnalysisJobRequest` | `202 AnalysisJobDetail` | Required idempotency key and unchanged semantic input |
+| `POST /reports/{report_id}/versions` | `CreateVersionRequest` | `201 VersionDetail` | Required idempotency key and expected draft revision |
+| `GET /reports/{report_id}/versions` | `PageQuery` | `200 Page<VersionSummary>` | None |
+| `GET /reports/{report_id}/versions/{version_id}` | None | `200 VersionDetail` | None |
+| `POST /reports/{report_id}/versions/{version_id}/restore` | `RestoreVersionRequest` | `200 DraftDetail` | Required idempotency key and expected current draft revision |
+| `POST /reports/{report_id}/versions/{version_id}/pdf-exports` | `CreatePdfExportRequest` | `202 PdfExportDetail` | Required idempotency key |
+| `GET /reports/{report_id}/versions/{version_id}/pdf-exports` | `PageQuery` | `200 Page<PdfExportSummary>` | None |
+| `GET /reports/{report_id}/versions/{version_id}/pdf-exports/{export_id}` | None | `200 PdfExportDetail` | None |
+| `POST /reports/{report_id}/versions/{version_id}/pdf-exports/{export_id}/retry` | `RetryPdfExportRequest` | `202 PdfExportDetail` | Required idempotency key and same immutable version/input identity |
+| `GET /reports/{report_id}/versions/{version_id}/pdf-exports/{export_id}/download` | None | `200 application/pdf` or `303` short-lived signed location | Owner is reauthorized at download time |
+
+The MVP has no general `DELETE`, bulk mutation, arbitrary sort, or unrestricted source-content endpoint. Job polling reads persisted PostgreSQL state rather than broker state. A text source uses its explicit review-confirmation endpoint and its claims never create a canonical structured dataset.
+
+### Strict request schemas and mutation boundaries
+
+All mutation models reject undeclared fields. Accepted content is bounded by reviewed configuration and is never silently truncated. Expected revisions are command data, not optional transport hints; ETags may be added later as an optimization but do not replace the v1 revision fields.
+
+| Request schema | Required public fields and constraints |
+|---|---|
+| `CreateReportRequest` | Trimmed `name` of 1–200 Unicode characters; inclusive `period.start_date` and `period.end_date` with end not before start; `objectives` containing 1–20 trimmed strings of 1–2,000 characters each |
+| `UpdateDraftRequest` | `expected_revision >= 1` and at least one of `objectives`, structured `narrative`, `limitations`, or labeled `claims`; never accepts owner, stage, source rows, deterministic metrics, analysis provenance, version identity, or job/export state |
+| `CreateTextSourceRequest` | Unchanged Unicode `content` within the configured source-byte limit and an optional safe display label; the content is stored as untrusted data and never interpreted as instructions |
+| CSV multipart upload | Exactly one non-empty `file` within the configured byte limit; declared and detected CSV media type; UTF-8 with optional BOM; untrusted original filename retained separately from its normalized display filename |
+| `PutImportConfigurationRequest` | `expected_revision >= 0`, where `0` means no prior configuration; unique mappings of `{ source_column_ordinal >= 0, canonical_field }`; explicit normalization settings, including date format for non-ISO dates; `normalization_policy_version` |
+| `ValidateImportRequest` | Exact `configuration_revision` and source preview identity |
+| `ConfirmImportRequest` | Exact configuration revision, validation identity, canonical-data preview identity, and the complete acknowledged warning-code/identity set |
+| `ConfirmTextReviewRequest` | Exact source review revision and explicit acknowledgement that extracted figures remain unvalidated claims |
+| `CreateAnalysisJobRequest` | Current `dataset_id`, `canonical_data_identity`, `metric_result_set_id`, `objectives_revision`, and `expected_draft_revision` |
+| `RetryAnalysisJobRequest` | Expected semantic input identity and last observed attempt ordinal |
+| `CreateVersionRequest` | `expected_draft_revision` for the exact active draft snapshot |
+| `RestoreVersionRequest` | `expected_current_draft_revision`; restoration copies the selected immutable snapshot into a new active draft |
+| `CreatePdfExportRequest` | Explicit supported `template_version`; the parent path supplies the immutable report version |
+| `RetryPdfExportRequest` | Expected immutable input identity and last observed attempt ordinal; the version and template binding cannot change |
+
+Ordinal mapping is one-to-one: a source-column ordinal maps to at most one canonical field and each canonical field receives at most one ordinal. Suggested mappings remain editable and unconfirmed. Source attachment creates an immutable source; later review/configuration commands refer to it rather than modifying its content. Confirmation succeeds only for the exact error-free revision the owner reviewed and acknowledged.
+
+Draft narrative follows the five AI sections: `summary`, `findings`, `anomalies`, `recommendations`, and `data_gaps`. Items use stable identities, bounded editable text where permitted, classification as `observation`, `hypothesis`, or `user_claim` where applicable, and metric/claim references. Mutable requests cannot set deterministic values, provenance, ownership, lifecycle state, immutable snapshot fields, or internal storage/provider fields. Pasted text, filenames, comments, and claims remain labeled unvalidated source material and cannot enter canonical rows or metric inputs.
+
+### Summary, detail, and discriminated response models
+
+List responses stay shallow; detail responses add only the owner-authorized provenance needed for their operation. Database models are never serialized directly.
+
+| Response model | Required public field groups |
+|---|---|
+| `ReportSummary` | `id`, `name`, `period`, derived `stage`, active draft `{ id, revision }`, safe current source/dataset/analysis references when present, latest version `{ id, version_number }` when present, `created_at`, `updated_at` |
+| `ReportDetail` | Summary fields plus `objectives`, `active_draft: DraftDetail`, current source/import/dataset/metric/job summaries, and available-operation indicators derived from persisted state |
+| `DraftDetail` | `id`, `report_id`, positive `revision`, objectives, structured editable narrative, labeled claims, limitations, current metric-result-set and analysis-result references, timestamps |
+| `SourceDetail` | `id`, `report_id`, type, byte size, checksum, media type or encoding, safe display filename and separately labeled untrusted original filename for CSV, review/configuration revision, `created_at`; never an object key |
+| `SourcePreview` | Source and preview identities; bounded columns and rows or bounded text excerpt; original headers; source-column ordinals and one-based record indexes; `truncated`; returned/total counts when known; mapping suggestions labeled unconfirmed; claims labeled unvalidated |
+| `ImportConfiguration` | Configuration/report/source identities, revision, mappings, normalization settings and policy version, latest validation identity/summary, status `editing`, `validated`, or `confirmed`, timestamps |
+| `ImportValidation` | Configuration and preview identities, deterministic summary counts, ordered validation issues, canonical-data preview identity only when errors are absent, validation time |
+| `ConfirmedImport` | Configuration/source identities and revisions, warning acknowledgement, canonical dataset identity, row count, inclusive period, currencies, confirming principal reference, confirmation time |
+| `ConfirmedSourceReview` | Source/review identities and revision, explicit unvalidated-claim acknowledgement, confirming principal reference, confirmation time; no canonical dataset or metric identity |
+| `DatasetDetail` | `id`, `report_id`, source and confirmed-configuration identities/revisions, canonical-data identity, row count, inclusive period, currencies, normalization-policy version, confirmation provenance, `created_at` |
+| `CanonicalRow` | Stable row identity, one-based source record index, mapped canonical values only, and source-column ordinal provenance; never unmapped values |
+| `MetricResultSet` | Dataset/canonical identity, calculation version/time, ordered discriminated metric results, scope metadata |
+| `AnalysisJobSummary` | `id`, `report_id`, semantic input identity, persisted state, attempt count, result presence, safe failure summary only when failed, timestamps |
+| `AnalysisJobDetail` | Summary plus captured dataset/metric/objective/draft identities, current-attempt timestamps, ordered safe attempt summaries, and validated analysis result only when succeeded |
+| `VersionSummary` | `id`, `report_id`, sequential `version_number`, source draft identity/revision, template version, provenance summary, latest PDF export summary, `created_at` |
+| `VersionDetail` | Summary plus immutable render snapshot: report metadata, safe source references/checksums, confirmed-import identity, metrics, validated AI provenance/output, edited narrative, limitations, labeled claims, and template version; never internal storage references or unrestricted source content |
+| `PdfExportSummary` | `id`, report/version identities, immutable template/input identity, persisted state, attempt count, safe succeeded/failed indicator, timestamps |
+| `PdfExportDetail` | Summary plus attempt timestamps/summaries and either succeeded file metadata `{ filename, content_type, byte_size, checksum, download_available }` or sanitized failure |
+
+`MetricResult` is discriminated by `availability`. Both variants contain metric identity/name, exact aggregate input totals as decimal strings, aggregation scope, inclusive period, applicable currency, represented currencies, canonical-data identity, calculation version, and calculation time. `available` requires `value` and `unit` and forbids `reason`. `unavailable` requires exactly one reason from `missing_input`, `zero_denominator`, `invalid_input`, `incompatible_currency`, or `incomparable_period`, includes only safe supporting fields, and forbids `value`. It never substitutes zero, infinity, `NaN`, or an invented figure; a genuine zero numerator with a positive denominator remains an available value of `"0"`.
+
+Analysis jobs and PDF exports use exactly `queued`, `running`, `succeeded`, and `failed`; clients do not infer state from missing fields or broker delivery. A succeeded analysis result contains the five structured sections, observation-versus-hypothesis labels, model identifier, prompt version, request provenance, and metric references. A `JobFailure` exposes only stable `code`, safe `message`, and `retryable`. Analysis failure codes are `provider_timeout`, `provider_refusal`, `provider_unavailable`, `incomplete_response`, `invalid_structured_output`, and `stale_result`; PDF failure codes are `render_failed`, `storage_unavailable`, `invalid_snapshot`, and `artifact_validation_failed`. Raw provider responses, customer-bearing prompts, stack traces, credentials, database errors, and internal storage data are forbidden.
+
+### Cursor pagination
+
+`PageQuery` accepts optional `cursor` and `limit`. `limit` defaults to `25`, has a minimum of `1`, and a maximum of `100`. Every collection returns:
+
+```json
+{
+  "data": [],
+  "page": {
+    "limit": 25,
+    "has_more": false,
+    "next_cursor": null
+  }
+}
+```
+
+Cursors are opaque, integrity-protected keyset cursors. Their server-side payload binds the authenticated principal, route, parent identifiers, normalized filters, fixed ordering, and last keyset boundary. A cursor never grants authorization by itself and clients never parse it. Implementations fetch `limit + 1` rows to derive `has_more` without a default total-count query.
+
+| Collection | Deterministic ordering |
+|---|---|
+| Reports | `(created_at DESC, id DESC)` |
+| Analysis jobs | `(created_at DESC, id DESC)` |
+| PDF exports | `(created_at DESC, id DESC)` |
+| Report versions | `(version_number DESC, id DESC)` |
+| Immutable dataset rows | `(source_record_index ASC, row_id ASC)` |
+
+The first page omits `cursor`. A non-final page has `has_more: true` and a non-null opaque `next_cursor`. A final page returns remaining items with `has_more: false` and `next_cursor: null`; an empty collection has the same final-page metadata with an empty `data` array. Replaying the same valid cursor produces the same keyset boundary while referenced rows remain available. Invalid, expired, tampered, filter-mismatched, parent-mismatched, route-mismatched, ordering-mismatched, or cross-owner cursors return `400 invalid_cursor` with no cursor internals or original-scope resource data. Offset pagination, client-selected sorting, and default total counts are outside the MVP.
+
+### Idempotency and optimistic concurrency
+
+`Idempotency-Key` contains 1–128 visible ASCII characters matching `[A-Za-z0-9._:-]+`. It is required for report creation, source attachment, import or text-review confirmation, analysis creation and retry, version creation and restoration, and PDF export creation and retry. Draft and import-configuration updates always require their expected revision; they may additionally accept a key.
+
+The key's uniqueness scope is authenticated principal, operation, parent resource, and key. After strict validation, the server computes a cryptographic fingerprint of the canonical semantic command rather than comparing raw JSON bytes or storing the raw body. The idempotency record and logical domain mutation are persisted atomically in one transaction, and the compact record remains for the lifetime of its logical result in the MVP.
+
+- The same scoped key and same canonical fingerprint returns the original status and representation and sets `Idempotency-Replayed: true`.
+- The same scoped key with different semantic input returns `409 idempotency_conflict` and changes neither request result.
+- Replays cannot create additional reports, sources, confirmations, logical jobs, versions, exports, attempts, sequence gaps, or side effects.
+- Analysis and PDF commands resolve to the persisted logical job or export; an individual worker attempt is not the idempotent result. A retry command has its own key, while database uniqueness and legal state transitions ensure repeated HTTP delivery or broker redelivery creates at most one intended new attempt.
+
+Mutable drafts and import configurations use compare-and-set semantics. The domain transaction verifies the submitted `expected_revision`, performs the mutation, and increments the revision atomically. A stale value returns `409 revision_conflict` with only allowlisted expected/current metadata and leaves stored and submitted content unmerged. Analysis creation also captures the expected draft revision and full semantic input identity; analysis retry requires that identity to remain current. Version creation snapshots exactly `expected_draft_revision`, restoration compares `expected_current_draft_revision`, and PDF creation/retry stays bound to the immutable version, template, and input identity. Process-local locks, timestamp-only freshness, and quickly expired keys do not satisfy these guarantees.
+
+### Standard errors and HTTP mapping
+
+Every JSON error has exactly this stable outer shape:
+
+```json
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "The request contains invalid fields.",
+    "request_id": "opaque-correlation-id",
+    "retryable": false,
+    "details": [],
+    "context": {}
+  }
+}
+```
+
+`code` is machine-readable, `message` is safe for users, `request_id` is an opaque correlation identifier, and `retryable` says whether repeating without user correction can reasonably succeed. `details` is always an array and `context` is always an object. Context is constructed only after owner authorization and contains only the allowlisted fields below.
+
+| Error code | HTTP | Retryable | Allowed context |
+|---|---:|---:|---|
+| `invalid_request` | 400 | false | Empty |
+| `invalid_cursor` | 400 | false | Empty |
+| `unauthenticated` | 401 | false | Empty |
+| `resource_not_found` | 404 | false | Requested resource type only |
+| `revision_conflict` | 409 | false | Resource type/id, expected revision, current revision |
+| `idempotency_conflict` | 409 | false | Operation name only |
+| `lifecycle_conflict` | 409 | false | Current stage/state and allowed stages/states |
+| `stale_input` | 409 | false | Safe current input identities/revisions |
+| `warning_acknowledgement_required` | 409 | false | Unacknowledged warning identities/codes |
+| `job_not_retryable` | 409 | false | Current job state |
+| `export_not_ready` | 409 | true only while queued/running; false when failed | Current export state |
+| `payload_too_large` | 413 | false | Maximum accepted bytes |
+| `unsupported_media_type` | 415 | false | Allowed media types |
+| `unsupported_encoding` | 415 | false | Allowed encodings |
+| `validation_failed` | 422 | false | Empty; field locations are in `details` |
+| `rate_limited` | 429 | true | Rate-limit scope; `Retry-After` is authoritative |
+| `internal_error` | 500 | false | Empty |
+| `dependency_unavailable` | 503 | true | Empty; `Retry-After` is required |
+
+Missing resources and resources owned by another principal are deliberately indistinguishable: both return the same `404 resource_not_found` status, shape, message class, and resource-type-only context. Authorization runs before validation or conflict construction, so a foreign resource never produces revision, lifecycle, job, source, version, export, or ownership metadata.
+
+Framework-default validation bodies are not public API responses. A synchronous dependency failure before a resource or job can be accepted may use sanitized `503 dependency_unavailable`. A provider, worker, renderer, or storage failure after acceptance belongs in the persisted job/export `failed` representation; it is not translated into a later raw provider HTTP error.
+
+### Validation details, domain issues, and redaction
+
+A structural request validation detail has stable `code`, safe `message`, and `path`. `path` is an array of JSON property names and zero-based array indexes, such as `["objectives", 0]`; it identifies the schema location without echoing the rejected value. Multiple details use deterministic schema/path ordering and a failed mutation creates no partial resource.
+
+Import validation issues are domain results and keep their source locations distinct from request paths. Every issue has stable `code`, `severity` (`error` or `warning`), safe `message`, and, where applicable, `canonical_field`, zero-based `source_column_ordinal`, and one-based `source_record_index`. Duplicate-row warnings identify both one-based record indexes using safe location metadata. Import errors block confirmation; warnings remain visible and require acknowledgement according to the confirmation contract.
+
+Revision, lifecycle, stale-input, acknowledgement, job, and export conflicts put only the fields allowed by the error table in `error.context`. This makes expected/current revisions, safe semantic identities, or current states distinguishable without placing submitted content into messages or details. Validation field information stays in `details`, not unrestricted context.
+
+Error and validation serialization must never include submitted cell/source values, raw pasted content, an unsafe original filename, bearer/cookie/authorization tokens, credentials, signed URLs, internal object keys, stack traces, SQL or database errors, unrestricted prompts, or provider request/response payloads. A filename may appear only as a separately labeled safely normalized display name where that schema explicitly permits it. Logs follow the same customer-data and secret redaction boundary.
+
 ## Delivery Sequence
 
 Complete these stages sequentially. For every stage after project instructions, create, review, validate, and approve a focused OpenSpec change before implementation. Do not combine database, backend, and frontend implementation into one change.
@@ -340,6 +543,41 @@ Each focused stage owns the evidence for its behavior and must name applicable l
 | Versioning and PDF | Integration and fixed-snapshot rendering tests for atomic version numbers, complete immutable snapshots, repeated version clicks, exact-version PDF content, export failure/retry, authorized download, and draft cloning |
 | Frontend | Component and browser tests for explicit loading, empty, validation, job, failure, unavailable, retry, and conflict states; keyboard/focus behavior; unsaved-edit preservation; and the seven-step journey |
 | Integrated verification | PostgreSQL-backed and browser evidence for create/import/confirm/analyze/edit/version/export/history, ownership isolation, and safe repeated delivery, clicks, and retries |
+
+### Stage 2 API contract verification
+
+The focused Stage 2 backend change must create contract suites grouped by resource family. Each suite uses runtime requests and serialized responses—not documentation snapshots alone—and verifies owner authorization before metadata-bearing validation or conflict handling.
+
+| Suite | Required evidence before backend handoff |
+|---|---|
+| Reports and drafts | Valid idempotent creation; every structural/field constraint; summary/detail and derived-stage serialization; unauthenticated and owner-safe `404`; successful and stale expected-revision saves; protected-field/unknown-field rejection; replay/key conflict; no implicit source, job, version, or export |
+| Sources and imports | Text and CSV creation/replay; immutable source behavior; size/type/encoding failures; safe/untrusted filename separation; bounded previews; ordinal mapping structure; validation issue severities and locations; exact revision and warning acknowledgement; stale/lifecycle conflicts; cross-owner isolation; no source-value, object-key, or unrestricted-content disclosure |
+| Datasets and metrics | Current/detail/row owner authorization; deterministic row pagination; canonical-only row fields; exact decimal strings; available/unavailable discriminated-union exclusivity; aggregate input, currency, scope, period, identity, and calculation provenance; no unmapped or foreign data |
+| Analysis jobs | `202` idempotent creation; structural and lifecycle validation; captured semantic input and expected revision; all four persisted states; result shape and each sanitized failure code; equivalent replay/key conflict; unchanged-input retry and retry-attempt deduplication; stale retry rejection; cross-owner isolation; no prompt, provider payload, credential, or stack trace |
+| Versions | `201` sequential immutable snapshot; structural and stale-revision rejection; equivalent replay without duplicate or sequence gap; owner isolation; deterministic ordering; immutable detail provenance; restoration creates a new revisioned draft and preserves all history; no internal storage reference or unrestricted source content |
+| PDF exports | `202` idempotent version-bound creation; structural/lifecycle checks; all four persisted states; same-version/input retry and attempt deduplication; succeeded file metadata; failed sanitized metadata; not-ready download; owner-authorized stream/redirect; cross-owner isolation; no object key, credential, or signed URL in JSON |
+
+Every suite must assert the single-resource or collection envelope, declared status, exact scalar encodings, unknown-field rejection, and relevant error context allowlist. Tests must also prove failed or replayed commands do not create partial resources, duplicate side effects, or work for another owner.
+
+The Stage 2 change must also create cross-cutting suites with this evidence:
+
+| Suite | Required evidence |
+|---|---|
+| Pagination | Default `25`, minimum `1`, maximum `100`, and out-of-range validation; deterministic first/middle/final and empty pages; correct `has_more`/`next_cursor`; inserts before a keyset boundary; replayed boundaries; tampered, expired, route/filter/parent/order-mismatched, and cross-owner cursors all yield safe `400 invalid_cursor` |
+| Errors and redaction | Every baseline code has an applicable endpoint fixture asserting its one status, retryability rule, request ID, deterministic detail shape, and exact context allowlist; owner-safe `404`; `Retry-After` for `429` and retryable `503`; no submitted source value, unsafe filename, credential, token, signed URL, object key, stack trace, database error, unrestricted prompt, or provider payload |
+| Idempotency and concurrency | Key syntax/scope; canonical-equivalent replay and replay header; different-input conflict; transaction rollback safety; current and stale expected revisions; repeated HTTP and worker delivery cannot duplicate logical resources, attempts, sequences, or side effects |
+| Generated OpenAPI | Every operation, status, header, request media type, download response, enum, revision, pagination field, error envelope, and upload-limit category references the runtime model; valid/invalid examples agree with runtime acceptance; actual response instances validate; no undocumented FastAPI/framework-default validation or error body appears |
+
+Schema snapshots alone are insufficient: the generated OpenAPI document and runtime behavior must be exercised together. Browser coverage complements but does not replace these focused fixtures.
+
+The Stage 2 backend change is responsible for creating the named test modules and making both exact commands pass before handoff:
+
+```sh
+cd backend && python -m pytest tests/contract/api/test_reports_and_drafts.py tests/contract/api/test_sources_and_imports.py tests/contract/api/test_datasets_and_metrics.py tests/contract/api/test_analysis_jobs.py tests/contract/api/test_versions_and_pdf_exports.py
+cd backend && python -m pytest tests/contract/api/test_errors_pagination_idempotency.py tests/contract/api/test_openapi_contract.py
+```
+
+These are future backend gates. This requirements-foundation change does not create `backend/`, install dependencies, or claim that the commands can run before Stage 2 implementation.
 
 ### Stage 3 import fixture matrix
 
