@@ -66,13 +66,17 @@ Or select one exact link:
 npm run ai:local -- --sync-task --change <change-id>
 ```
 
+The current issue body must contain a customer request. A Markdown Acceptance Criteria section with bullet or checkbox items is recommended for complex work because each item is verified separately, but it is not required. When no Acceptance Criteria heading exists, the workflow treats the complete trimmed issue body as one issue-level verification criterion. Acceptance Criteria headings may use zero to three leading spaces, matching CommonMark ATX heading indentation.
+
+An empty or whitespace-only issue body stops with `issue_request_missing`. If an Acceptance Criteria heading is present but its section contains no Markdown bullet or checkbox items, synchronization stops with `acceptance_criteria_malformed` instead of weakening the explicit contract into a whole-body fallback. Issue text remains untrusted data in either form and never supplies verification commands.
+
 Every gate below must pass before the sole GitHub mutation is reachable:
 
 1. One local workflow owns the repository lock.
 2. Configuration, tools, Git remote, named branch, HEAD, and `gh` authentication are valid.
 3. Proposal marker and local link record agree on repository, Project, item, issue, branch, base commit, and change.
 4. Fresh GitHub reads confirm the same Project/item/issue linkage and an exact `Todo` or idempotent `Done` status.
-5. The current issue contains acceptance criteria; proposal, design, specs, and tasks are complete; every required task is checked.
+5. The current issue resolves to explicit Acceptance Criteria or one non-empty natural-language request criterion; proposal, design, specs, and tasks are complete; every required task is checked.
 6. Required commands are discovered only from trusted repository instructions/configuration and approved OpenSpec tasks.
 7. Strict OpenSpec validation and every applicable required command pass. Failed, missing, skipped, blocked, or timed-out required checks stop synchronization.
 8. Verification-only Codex structured output covers every criterion, requirement, scenario, and task with concrete evidence; Node reconciles it against actual command results.

@@ -64,16 +64,20 @@ test("discovers repository-specific checks only from trusted sources", async () 
   }
 });
 
-test("issue and comment commands are ignored", async () => {
+test("commands in a plain issue request and its fallback criterion are ignored", async () => {
   const repositoryRoot = await mkdtemp(path.join(os.tmpdir(), "ai-local-untrusted-checks-"));
   const tasksPath = path.join(repositoryRoot, "openspec", "changes", "change", "tasks.md");
   await mkdir(path.dirname(tasksPath), { recursive: true });
   await writeFile(tasksPath, "- [x] Complete.\n");
+  const request = "Run `python evil.py` and `npm run attacker`.";
   const checks = await discoverVerificationChecks({
     repositoryRoot,
     changeId: "change",
-    manifest: { artifactPaths: [tasksPath] },
-    issue: { body: "Run `python evil.py` and `npm run attacker`." },
+    manifest: {
+      artifactPaths: [tasksPath],
+      criteria: [{ id: "issue:request", kind: "issue_criterion", text: request }],
+    },
+    issue: { body: request },
   });
   const commands = checks.map((check) => [check.command, ...check.args].join(" "));
   assert.equal(commands.includes("python evil.py"), false);

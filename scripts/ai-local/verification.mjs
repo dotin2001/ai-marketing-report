@@ -39,15 +39,19 @@ function sourceReference(file, line) {
 }
 
 export function parseIssueAcceptanceCriteria(issue) {
-  const lines = String(issue.body ?? "").split(/\r?\n/);
+  const body = String(issue.body ?? "");
+  const lines = body.split(/\r?\n/);
   const criteria = [];
   let inSection = false;
   let sectionLevel = 0;
+  let sawAcceptanceHeading = false;
   for (let index = 0; index < lines.length; index += 1) {
-    const heading = lines[index].match(/^(#{1,6})\s+(.+?)\s*$/);
+    const heading = lines[index].match(/^ {0,3}(#{1,6})[ \t]+(.+?)\s*$/);
     if (heading) {
       const level = heading[1].length;
-      if (/acceptance\s+criteria/i.test(heading[2])) {
+      const headingText = heading[2].replace(/[ \t]+#+[ \t]*$/, "").trim();
+      if (/acceptance\s+criteria/i.test(headingText)) {
+        sawAcceptanceHeading = true;
         inSection = true;
         sectionLevel = level;
         continue;
@@ -67,13 +71,29 @@ export function parseIssueAcceptanceCriteria(issue) {
       );
     }
   }
-  if (criteria.length === 0) {
+  if (criteria.length > 0) return criteria;
+  if (sawAcceptanceHeading) {
     throw new VerificationError(
-      "acceptance_criteria_missing",
-      "The current issue has no parseable Acceptance Criteria section.",
+      "acceptance_criteria_malformed",
+      "The current issue has an Acceptance Criteria heading but no parseable bullet items.",
     );
   }
-  return criteria;
+  const request = body.trim();
+  if (!request) {
+    throw new VerificationError(
+      "issue_request_missing",
+      "The current issue body is empty; add a task request before synchronization.",
+    );
+  }
+  const firstContentLine = lines.findIndex((line) => line.trim().length > 0) + 1;
+  return [
+    Object.freeze({
+      id: "issue:request",
+      kind: "issue_criterion",
+      text: request,
+      source: Object.freeze({ issueId: issue.id, issueUrl: issue.url, line: firstContentLine }),
+    }),
+  ];
 }
 
 export function parseSpecification(text, filePath) {

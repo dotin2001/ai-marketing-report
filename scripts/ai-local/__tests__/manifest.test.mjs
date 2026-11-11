@@ -31,6 +31,13 @@ test("canonical manifest enumerates every criterion, requirement, scenario, and 
   const manifest = await buildVerificationManifest(context);
   assert.equal(manifest.criteria.length, 2);
   assert.deepEqual(
+    manifest.criteria.map(({ id, text, source }) => ({ id, text, line: source.line })),
+    [
+      { id: "issue:1", text: "First criterion", line: 3 },
+      { id: "issue:2", text: "Second criterion", line: 4 },
+    ],
+  );
+  assert.deepEqual(
     manifest.requirements.map((entry) => entry.kind),
     ["requirement", "scenario", "scenario"],
   );
@@ -59,10 +66,48 @@ test("fails closed when any required task is unchecked", async () => {
   );
 });
 
-test("fails closed when issue acceptance criteria are missing", async () => {
+test("explicit CommonMark-indented acceptance criteria take precedence over request prose", async () => {
   const context = await fixture();
-  context.issue.body = "No acceptance criteria section.";
+  context.issue.body = "Customer request prose.\n   ## Acceptance Criteria ##\n   - [ ] First explicit outcome\n   * Second explicit outcome\n## Notes\n- ignored\n";
+  const manifest = await buildVerificationManifest(context);
+  assert.deepEqual(
+    manifest.criteria.map(({ id, text, source }) => ({ id, text, line: source.line })),
+    [
+      { id: "issue:1", text: "First explicit outcome", line: 3 },
+      { id: "issue:2", text: "Second explicit outcome", line: 4 },
+    ],
+  );
+  assert.equal(manifest.criteria.some(({ text }) => text.includes("Customer request prose")), false);
+});
+
+test("uses a complete trimmed natural-language issue body as one criterion", async () => {
+  const context = await fixture();
+  context.issue.body = "\n  Build the requested report workflow.\nPreserve its safety gates.\n\n";
+  const manifest = await buildVerificationManifest(context);
+  assert.deepEqual(
+    manifest.criteria.map(({ id, kind, text, source }) => ({ id, kind, text, line: source.line })),
+    [{
+      id: "issue:request",
+      kind: "issue_criterion",
+      text: "Build the requested report workflow.\nPreserve its safety gates.",
+      line: 2,
+    }],
+  );
+  assert.equal(manifest.entries.length, 6);
+});
+
+test("fails closed when the issue request is empty", async () => {
+  const context = await fixture();
+  context.issue.body = " \n\t\n";
   await assert.rejects(() => buildVerificationManifest(context), (error) =>
-    error.code === "acceptance_criteria_missing",
+    error.code === "issue_request_missing",
+  );
+});
+
+test("fails closed instead of falling back from malformed explicit criteria", async () => {
+  const context = await fixture();
+  context.issue.body = "Customer request prose.\n## Acceptance Criteria\nDescribe success without a list.\n## Notes\n- not a criterion\n";
+  await assert.rejects(() => buildVerificationManifest(context), (error) =>
+    error.code === "acceptance_criteria_malformed",
   );
 });

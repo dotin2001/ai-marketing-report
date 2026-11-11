@@ -9,7 +9,9 @@ npm run ai:local -- --sync-task
 npm run ai:local -- --sync-task --change <change-id>
 ```
 
-Planning can be interactive or target one canonical GitHub issue URL. URL-targeted planning still requires the issue to be an exact `Todo` item in the configured Project; the standalone `--` forwards `--issue` through npm. Both planning forms can reuse an existing valid issue/change link instead of duplicating it and stop before implementation. Review and apply the proposal manually in Codex with `$openspec-apply-change <change-id>`. Failed verification leaves `Todo` unchanged; a failed GitHub synchronization retains passing evidence for a fingerprint-checked retry.
+Planning can be interactive or target one canonical GitHub issue URL. URL-targeted planning still requires the issue to be an exact `Todo` item in the configured Project; the standalone `--` forwards `--issue` through npm. Both planning forms can reuse an existing valid issue/change link instead of duplicating it and stop before implementation. Review and apply the proposal manually in Codex with `$openspec-apply-change <change-id>`.
+
+For synchronization, a normal non-empty issue description is sufficient and becomes one issue-level verification criterion. A Markdown Acceptance Criteria section is optional but recommended when separate outcomes need separate evidence. Empty issue bodies and explicitly present criteria sections without bullet items fail closed. Failed verification leaves `Todo` unchanged; a failed GitHub synchronization retains passing evidence for a fingerprint-checked retry.
 
 The issue always remains open. The automation never switches branches, commits, pushes, merges, rebases, deploys, destructively cleans the worktree, or updates a non-selected Project item.
 
