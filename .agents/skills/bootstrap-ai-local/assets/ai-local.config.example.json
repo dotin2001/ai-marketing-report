@@ -1,0 +1,22 @@
+{
+  "github": {
+    "repository": "example-owner/example-repository",
+    "projectOwner": "example-owner",
+    "projectNumber": 1,
+    "statusField": "Status",
+    "todoOption": "Todo",
+    "doneOption": "Done"
+  },
+  "packageManager": "npm",
+  "verification": {
+    "autoDiscover": true,
+    "commands": [
+      {
+        "command": "npm",
+        "args": ["test"],
+        "timeoutMs": 300000
+      }
+    ]
+  },
+  "runtimeDirectory": ".ai-local"
+}

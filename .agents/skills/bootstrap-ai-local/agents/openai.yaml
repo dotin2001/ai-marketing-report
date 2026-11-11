@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bootstrap AI Local"
+  short_description: "Install a guarded local AI issue workflow"
+  default_prompt: "Use $bootstrap-ai-local to inspect this repository and scaffold the guarded ai:local OpenSpec workflow."
