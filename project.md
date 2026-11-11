@@ -162,21 +162,67 @@ Both logical job types use exactly `queued`, `running`, `succeeded`, and `failed
 
 ## CSV and Metric Baseline
 
-The documented MVP CSV schema supports mapping to:
+The MVP structured-data envelope is a comma-delimited CSV with one header record and one or more data records, decoded as UTF-8 with an optional byte-order mark. The seven fields below are the complete canonical schema. `date`, `campaign_name`, and `currency` are required dimensions; the four measures are optional columns, but at least one measure must be mapped. Once a measure is mapped, every data record must contain a valid value for it.
 
-- Dimensions: `date`, `campaign_name`, `currency`.
-- Measures: `impressions`, `clicks`, `spend`, `leads`.
+| Field | Presence | Canonical type | Unit / semantics | Normalization |
+|---|---|---|---|---|
+| `date` | Required | ISO calendar date | `YYYY-MM-DD`, without time or timezone | Accept an explicitly configured format or unambiguous ISO date; never infer from locale or runtime defaults |
+| `campaign_name` | Required | Non-empty Unicode string | Campaign label | Remove surrounding whitespace only; an empty result is invalid |
+| `currency` | Required | ISO 4217 alphabetic code | Row currency | Uppercase and validate against the versioned supported-code list |
+| `impressions` | Optional column | Non-negative base-10 integer | Impression count | Accept a plain whole count; reject negative, fractional, boolean, unit-bearing, or non-finite values |
+| `clicks` | Optional column | Non-negative base-10 integer | Click count | Accept a plain whole count; reject negative, fractional, boolean, unit-bearing, or non-finite values |
+| `spend` | Optional column | Non-negative finite base-10 exact decimal | Major unit of the row currency | Parse without binary floating-point coercion or implicit scaling; reject symbols, percentages, booleans, and locale-dependent forms |
+| `leads` | Optional column | Non-negative base-10 integer | Lead count | Accept a plain whole count; reject negative, fractional, boolean, unit-bearing, or non-finite values |
 
-`date`, `campaign_name`, and `currency` are required for structured CSV analysis. At least one supported measure must be present. Provided measures must parse as non-negative numeric values. Validation reports missing columns, unmapped columns, invalid rows, ambiguous dates, unsupported currencies, and mixed-currency aggregation risks before confirmation.
+### Mapping, normalization, and confirmation
 
-KPI formulas are:
+The import boundary keeps the original source immutable and untrusted. Processing follows this deterministic sequence:
 
-- `CTR = aggregate clicks / aggregate impressions * 100`
-- `CPC = aggregate spend / aggregate clicks`
-- `CPM = aggregate spend / aggregate impressions * 1000`
-- `CPL = aggregate spend / aggregate leads`
+1. Decode and parse the immutable source while identifying each source column by ordinal and original header and each data record by a one-based record index. Ordinals keep repeated header names distinct.
+2. Apply an editable mapping revision. A source-column ordinal maps to at most one canonical field, and each canonical field receives at most one source column. Suggested mappings remain editable and never count as confirmation.
+3. Normalize mapped values with a versioned policy, preserving each original value and its provenance. Missing mapped values are blocking errors; normalization never imputes, forward-fills, interpolates, silently drops a row, or substitutes zero.
+4. Validate the mapping and normalized records against the inclusive report period. Unmapped source columns remain in the immutable original but are excluded from canonical data and calculation.
+5. Derive the canonical-data identity from the canonical rows, source identity and checksum, mapping revision, normalization-policy revision, and report period.
+6. Explicitly confirm only the exact error-free revision the owner reviewed, including its warnings. Calculation may use only that confirmed canonical-data identity.
 
-A KPI is unavailable when an input is absent, invalid, incompatible, or has a zero denominator. Ratios are calculated from aggregated numerators and denominators, never by averaging row ratios. Spend-based metrics are calculated only within a single currency group; the MVP does not convert currencies.
+Any behavior-affecting change to the source, mapping, normalization configuration or policy, or report period invalidates the previous confirmation, canonical-data identity, and derived metrics. The changed revision must be validated and explicitly confirmed again.
+
+Dates that are ambiguous or invalid, unsupported currency codes, negative measures, fractional counts, non-finite values, currency or unit symbols, percentages, booleans, locale-dependent numeric forms, and blank cells in mapped fields are errors. A measure column that is not mapped is an absent KPI input rather than a row error, provided another supported measure is mapped.
+
+### Validation issues and confirmation gate
+
+Every validation issue has a stable machine-readable `code`, `severity` (`error` or `warning`), safe human-readable message, and, when applicable, canonical field, source-column ordinal, and one-based source-record index.
+
+| Category | Stable codes | Severity and deterministic effect |
+|---|---|---|
+| Mapping and dataset shape | `missing_required_mapping`, `missing_measure_mapping`, `duplicate_mapping`, `empty_dataset` | Error; blocks confirmation and produces no current canonical dataset or metric result |
+| Mapped values and period | `missing_value`, `invalid_date`, `ambiguous_date`, `blank_campaign_name`, `unsupported_currency`, `invalid_count`, `invalid_spend`, `negative_measure`, `out_of_period` | Error; blocks the entire revision, and no invalid row is silently dropped or partially calculated |
+| Unmapped source column | `unmapped_column` | Warning; display and acknowledge it, preserve the source column in the immutable original, and exclude it from canonical data and arithmetic |
+| Exact duplicate canonical row | `duplicate_row` | Warning identifying both record indexes; include both rows unless the user replaces or changes the source, because the system never silently deduplicates |
+| Multiple currencies | `mixed_currency` | Warning; include all valid rows for non-monetary CTR, partition spend metrics by currency, and make a requested cross-currency spend result unavailable |
+
+All errors block confirmation. Warnings are displayed and acknowledged but do not block it because their inclusion or exclusion behavior is fixed above. Confirmation persists the owner and report, source identity and checksum, mapping and normalization-policy revisions, validation summary and warning acknowledgement, canonical-data identity, row count, inclusive reporting period, currencies present, and confirmation time.
+
+### Deterministic KPI results
+
+Calculation sums canonical inputs within the requested scope before dividing once:
+
+| KPI | Formula | Unit | Default scope |
+|---|---|---|---|
+| CTR | `aggregate clicks / aggregate impressions * 100` | `percent` | Whole confirmed report-period dataset, including multiple currency groups |
+| CPC | `aggregate spend / aggregate clicks` | `<currency>/click` | One currency partition |
+| CPM | `aggregate spend / aggregate impressions * 1000` | `<currency>/1000_impressions` | One currency partition |
+| CPL | `aggregate spend / aggregate leads` | `<currency>/lead` | One currency partition |
+
+The calculation context provides at least 28 significant decimal digits. Every available quotient that is non-terminating is serialized with at least 12 significant decimal digits. Exact aggregate numerator and denominator totals, canonical-data identity, calculation version, and calculation time are retained; presentation rounding is separate and never changes a stored result. Row-ratio averaging, intermediate display rounding, AI arithmetic, unsupported input inference, and invented substitutes are prohibited.
+
+Every requested supported KPI produces an explicit result. An available result contains the metric name, decimal value, unit, exact aggregate inputs, aggregation scope, inclusive reporting period, applicable currency, canonical-data identity, calculation version, and calculation time. A zero numerator with a present positive denominator is an available value of zero.
+
+An unavailable result contains the same identity, scope, period, input, and calculation-version provenance, omits the numeric value, and has exactly one primary reason: `missing_input`, `zero_denominator`, `invalid_input`, `incompatible_currency`, or `incomparable_period`, plus supporting field or scope details. It never presents zero, infinity, `NaN`, or an invented value as a substitute. `invalid_input` prevents a current result from attaching even though confirmation ordinarily catches it first.
+
+CTR may be report-wide across currencies because it has no monetary input, and its provenance lists the represented currencies. CPC, CPM, and CPL are calculated separately for each currency with sufficient inputs. A requested report-wide spend metric over multiple currencies is unavailable with `incompatible_currency`; spend is never summed across currencies, converted implicitly, or assigned a preferred currency.
+
+Period comparison is available only when both results have equivalent durations and boundaries under the selected comparison policy and compatible metric definitions, calculation versions, mappings, normalization policies, aggregation scopes, and currency scopes. Otherwise it is unavailable with `incomparable_period`, identifies the mismatch, and cannot feed a deterministic or AI-generated comparative conclusion. Pasted claims, filenames, comments, metadata, and unmapped values remain unvalidated source material and never enter canonical totals or arithmetic.
 
 ## AI Contract
 
@@ -294,6 +340,56 @@ Each focused stage owns the evidence for its behavior and must name applicable l
 | Versioning and PDF | Integration and fixed-snapshot rendering tests for atomic version numbers, complete immutable snapshots, repeated version clicks, exact-version PDF content, export failure/retry, authorized download, and draft cloning |
 | Frontend | Component and browser tests for explicit loading, empty, validation, job, failure, unavailable, retry, and conflict states; keyboard/focus behavior; unsaved-edit preservation; and the seven-step journey |
 | Integrated verification | PostgreSQL-backed and browser evidence for create/import/confirm/analyze/edit/version/export/history, ownership isolation, and safe repeated delivery, clicks, and retries |
+
+### Stage 3 import fixture matrix
+
+The later data-import and calculation change must create fixtures covering this matrix. Each fixture is tied to at least one named scenario in the `marketing-data-import-and-kpi-calculation` capability.
+
+| Fixture | Expected evidence | Capability scenario(s) |
+|---|---|---|
+| Plain UTF-8 and UTF-8 with BOM | Both parse as comma-delimited CSVs with the same ordinal/header identities and canonical values | Supported CSV is available for mapping |
+| Header only | `empty_dataset` error; confirmation and calculation are blocked | Header-only dataset is rejected |
+| Repeated header names | Columns remain distinct by ordinal plus original header | Supported CSV is available for mapping; Duplicate mapping is rejected |
+| Incorrect suggested mapping corrected by the owner | Preview and validation use only the corrected mapping revision | Suggested mapping is corrected before confirmation |
+| One valid row exercising all seven canonical fields | ISO date, trimmed Unicode campaign, uppercase ISO 4217 currency, whole counts, and exact-decimal spend retain source ordinal/record provenance | Valid row is normalized canonically |
+| Blank required dimension and blank mapped measure cells | One `missing_value` or `blank_campaign_name` error per affected field/record; no imputation or zero substitution | Mapped measure cell is missing; Blocking errors prevent confirmation |
+| Fractional or negative count, negative or symbolic spend, boolean, `NaN`, infinity, percentage, and locale-dependent number | Stable blocking field/record issues; no coercion or silent row removal | Invalid measure is blocked |
+| Ambiguous, invalid, and out-of-period dates | `ambiguous_date`, `invalid_date`, or `out_of_period` error; no locale guess; confirmation blocked | Ambiguous date is blocked; Date falls outside the reporting period |
+| Two exact duplicate canonical rows | `duplicate_row` warning names both record indexes and both rows remain included after acknowledgement | Exact duplicate canonical row is detected; Warnings are acknowledged |
+| Unsupported currency | `unsupported_currency` error; affected revision cannot become current | Unsupported currency is blocked |
+| Supported mixed currencies | `mixed_currency` warning; report-wide CTR includes valid rows, spend metrics partition by currency | Mixed-currency dataset produces per-currency results; CTR spans currencies without combining money |
+| Unmapped extra numeric column | `unmapped_column` warning; original is retained but the values are excluded from canonical totals | Unmapped source columns remain explicit; Unmapped numeric column is excluded |
+| Confirmed source, mapping, normalization, or period revised | Prior confirmation and metrics cease to be current; revalidation and explicit reconfirmation are required | Confirmed mapping changes |
+
+### Stage 3 KPI golden-case matrix
+
+Fixtures use a pinned fixture calculation version, `kpi-v1`, and assert exact input totals as decimal strings where applicable. A future version may use another identifier, but every fixture and result must name it.
+
+| Golden case | Exact aggregate inputs | Scope / version | Expected result |
+|---|---|---|---|
+| Aggregate ratio differs from row-ratio average | clicks `2`, impressions `110` from rows `1/10` and `1/100` | report / `kpi-v1` | CTR available as `1.818181818181...`, unit `percent`, serialized with at least 12 significant digits |
+| Valid zero numerator | clicks `0`, impressions `100` | report / `kpi-v1` | CTR available as exact `0`, unit `percent` |
+| Missing impressions | clicks `10`, spend `25`; impressions absent | report and currency:USD / `kpi-v1` | CTR and CPM unavailable with `missing_input`; each omits value and identifies `impressions` |
+| Missing clicks | impressions `1000`, spend `25`; clicks absent | report and currency:USD / `kpi-v1` | CTR and CPC unavailable with `missing_input`; each omits value and identifies `clicks` |
+| Missing spend | impressions `1000`, clicks `10`, leads `2`; spend absent | currency:USD / `kpi-v1` | CPC, CPM, and CPL unavailable with `missing_input`; each omits value and identifies `spend` |
+| Missing leads | spend `25`; leads absent | currency:USD / `kpi-v1` | CPL unavailable with `missing_input`; value omitted and `leads` identified |
+| Zero impressions denominator | impressions `0`, clicks `0`, spend `25` | report and currency:USD / `kpi-v1` | CTR and CPM unavailable with `zero_denominator`; zero total retained, values omitted |
+| Zero clicks denominator | clicks `0`, impressions `100`, spend `25` | currency:USD / `kpi-v1` | CPC unavailable with `zero_denominator`; zero total retained and value omitted; CTR remains available as `0 percent` |
+| Zero leads denominator | leads `0`, spend `25` | currency:USD / `kpi-v1` | CPL unavailable with `zero_denominator`; zero total retained and value omitted |
+| Exact decimal spend | spend `0.10 + 0.20 = 0.30`, clicks `3` | currency:USD / `kpi-v1` | CPC available as exact `0.10`, unit `USD/click`; no binary-float artifact |
+| Non-terminating quotient | spend `1`, impressions `3` | currency:USD / `kpi-v1` | CPM available as `333.333333333...`, unit `USD/1000_impressions`, at least 12 significant digits |
+| Deterministic rerun | Same canonical identity and the totals from the exact-decimal case | currency:USD / `kpi-v1` | Repeated runs have identical availability, totals, unit, scope, currency, and serialized `0.10` value |
+| Per-currency spend | USD: spend `30`, clicks `3`; EUR: spend `20`, clicks `4` | currency:USD and currency:EUR / `kpi-v1` | CPC results are `10 USD/click` and `5 EUR/click`, each using only its partition |
+| Cross-currency spend request | USD spend `30` plus EUR spend `20`; clicks `7` | report / `kpi-v1` | Report-wide CPC unavailable with `incompatible_currency`; no combined spend total or numeric value |
+| Compatible periods | Period A: clicks `10`, impressions `100`, CTR `10 percent`; period B: clicks `20`, impressions `100`, CTR `20 percent`; both 7 days with matching boundary policy and contracts | comparison:report / `kpi-v1` | Comparison available from the stored `10` and `20` values with unit `percent`, retaining both result identities and periods |
+| Incompatible periods or contracts | The same `10 percent` and `20 percent` CTR inputs over 7 and 8 days, or with any differing definition, version, mapping/policy, scope, or currency | comparison:report / `kpi-v1` | Comparison unavailable with `incomparable_period`; value omitted and incompatible attributes identified |
+
+The future Stage 3 data-import/calculation change must create the named suites and make both exact commands pass before handoff:
+
+```sh
+cd backend && python -m pytest tests/unit/processing/test_csv_import.py tests/unit/processing/test_normalization.py tests/unit/processing/test_kpi_calculation.py
+cd backend && python -m pytest tests/integration/processing/test_confirmed_import.py
+```
 
 ## Environment Configuration
 
