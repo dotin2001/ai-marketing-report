@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -37,6 +37,12 @@ test("accepts exhaustive structured results with concrete real evidence", () => 
   assert.equal(validateStructuredVerification(passing(), manifest, checkSummary).passed, true);
 });
 
+test("strict Codex output schema omits unsupported array uniqueness keywords", async () => {
+  const schemaPath = new URL("../schemas/verification.schema.json", import.meta.url);
+  const schema = JSON.parse(await readFile(schemaPath, "utf8"));
+  assert.equal(schema.properties.results.items.properties.commandEvidenceIds.uniqueItems, undefined);
+});
+
 for (const [name, mutate, code] of [
   ["missing coverage", (value) => value.results.pop(), "semantic_result_coverage_invalid"],
   ["unknown verdict", (value) => (value.results[0].verdict = "maybe"), "semantic_result_invalid"],
@@ -46,6 +52,11 @@ for (const [name, mutate, code] of [
     "semantic_result_not_applicable_unsupported",
   ],
   ["evidence-free pass", (value) => (value.results[0].evidence = []), "semantic_result_evidence_missing"],
+  [
+    "duplicate command evidence",
+    (value) => (value.results[0].commandEvidenceIds = ["check:1", "check:1"]),
+    "semantic_result_duplicate_command_evidence",
+  ],
   [
     "fabricated command",
     (value) => (value.results[0].commandEvidenceIds = ["check:fake"]),

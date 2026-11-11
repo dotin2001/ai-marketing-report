@@ -2,7 +2,7 @@
 
 ## Project Status
 
-The repository is in the project-instruction stage. No application code has been implemented and there is no active OpenSpec change. Each implementation stage will receive its own focused OpenSpec change rather than one umbrella change for the whole application.
+The repository is in the requirements-foundation stage. No application code or stage-specific infrastructure has been implemented. Each implementation stage will receive its own focused OpenSpec change rather than one umbrella change for the whole application.
 
 ## Product Goal
 
@@ -117,48 +117,48 @@ PostgreSQL is authoritative for state. Redis delivers work but is not the job-st
 ## Core Domain Model
 
 - **User identity**: authenticated principal used for ownership. The concrete authentication provider remains a design decision; ownership enforcement is not optional.
-- **Report**: owned container with name, reporting period, objectives, active draft, and timestamps.
-- **Source**: immutable pasted-text record or uploaded-object reference with content metadata and checksum.
-- **Import configuration**: confirmed column mapping, normalization settings, validation summary, and canonical-data reference or snapshot.
-- **Draft**: mutable report content with a revision used for optimistic concurrency.
-- **Metric result**: deterministic values, units, inputs, aggregation scope, and unavailable reasons.
-- **Analysis result**: validated structured AI output plus model identifier and prompt version.
-- **Job**: persisted operation with type, state, attempt information, idempotency key, input identity, result reference, and sanitized error.
-- **Report version**: immutable snapshot of source references, configuration, metrics, content, AI provenance, template version, and creation time.
-- **PDF export**: version-bound export state and generated-object reference.
+- **Report**: owner-scoped UUID, name, inclusive reporting-period dates, one or more objectives, active-draft identity and revision, derived workflow stage, and created/updated timestamps. The end date cannot precede the start date.
+- **Source**: immutable UUID and report-owner association; pasted-text or CSV type; creation time, byte size, checksum, media type or encoding; and either unchanged pasted content or an authorized object reference. CSV metadata retains the untrusted original filename separately from a safely normalized display filename.
+- **Confirmed import configuration**: report/source identity, configuration revision and input revision, user-confirmed column mapping and normalization settings, validation summary, canonical-data identity or snapshot, confirmation timestamp, and provenance sufficient to reproduce the confirmed input.
+- **Draft**: mutable identity, report owner, revision, objectives and narrative content, current metric/analysis references, labeled claims and limitations, and created/updated timestamps. Its revision is the compare-and-set boundary for optimistic saves.
+- **Metric result**: immutable identity linked to the confirmed input; deterministic metric name, value and unit when available, input totals, aggregation scope, period, currency where applicable, calculation version, unavailable reason, and calculation timestamp.
+- **Analysis result**: immutable identity linked to its logical job and semantic input identity; schema-validated `summary`, `findings`, `anomalies`, `recommendations`, and `data_gaps`; observation-versus-hypothesis labels; model identifier, prompt version, request provenance, and creation timestamp.
+- **Logical job and attempt**: owner/report association, job type, semantic input identity, idempotency key, persisted state, current result reference, and created/updated timestamps belong to the logical operation. Each attempt records its ordinal, queue/start/finish timestamps and sanitized failure details without exposing provider internals.
+- **Report version**: owner-scoped immutable UUID and sequential version number created atomically from one exact draft revision. Its creation timestamp and snapshot preserve report metadata, source references and checksums, confirmed configuration and canonical-data identity, metric inputs/results, AI and request provenance, edited narrative, limitations, labeled claims, and template version.
+- **Version-bound PDF export**: owner and immutable-version identity, template/input identity, idempotency key, logical state and persisted attempts, timestamps, and either sanitized failure details or an authorized generated-object reference, metadata, and checksum. Internal object keys are never public authorization tokens.
 
 ## Lifecycle and State Rules
 
-```text
-Report draft
-    |
-    +--> source imported --> mapping confirmed --> metrics calculated
-                                                  |
-                                                  v
-                                        AI job queued/running
-                                                  |
-                                      +-----------+-----------+
-                                      v                       v
-                                  succeeded                failed
-                                      |                       |
-                                      v                       +--> retry
-                              editable draft saved
-                                      |
-                                      v
-                           immutable version created
-                                      |
-                                      v
-                                PDF job queued
-                                      |
-                         +------------+------------+
-                         v                         v
-                     succeeded                  failed
-                         |                         |
-                         v                         +--> retry same version
-                     download
-```
+The user-facing report stage is derived from persisted report, current-source confirmation, metric, job, draft, and version facts. It is separate from analysis-job and PDF-export states.
 
-Allowed job states are `queued`, `running`, `succeeded`, and `failed`. A retry creates a new attempt for the same logical operation or safely requeues the failed job; it must not duplicate a report version or overwrite a newer draft result.
+| Current stage | Event and gate | Resulting stage |
+|---|---|---|
+| `created` | Attach an immutable pasted or CSV source | `source_review` |
+| `source_review` | Explicitly confirm the current source review or valid mapping/normalization configuration, then finish deterministic metrics | `analysis_ready` |
+| `analysis_ready` | Accept one logical analysis job for the current semantic input | `analysis_pending` |
+| `analysis_pending` | Attach a validated result only when its captured input identity is still current | `reviewing` |
+| `analysis_pending` | Current analysis fails | `analysis_ready`, retaining the failed job and prior valid result |
+| `analysis_pending` | Source, configuration, objectives, or relevant draft revision changes | Reject the late result as stale and return to `source_review` or `analysis_ready` according to whether confirmation remains valid |
+| `reviewing` | Atomically version the current draft revision | `versioned` |
+| `versioned` | Save a narrative-only edit or clone history into a new active draft | `reviewing` |
+| `reviewing` or `versioned` | Change source, mapping, normalization, reporting period, or objectives in a way that invalidates analysis | `source_review` or `analysis_ready`, according to whether the current confirmation remains valid |
+
+PDF queueing, running, success, failure, and retry never change the report stage because each export belongs to an immutable version. New inputs and drafts never remove or alter prior versions or their exports.
+
+### Editing and invalidation
+
+- Draft saves require the expected revision and atomically advance it. A stale revision produces a stable concurrency error and preserves both stored and submitted content; polling and recoverable failures must preserve unsaved local edits.
+- Users may edit narrative content, objectives, and other permitted draft fields. Original sources and deterministic metric values are non-editable. Saving a draft never creates an immutable version.
+- Analysis freshness uses a semantic identity containing the report, source checksum or identity, import-configuration revision, canonical-data identity, metric-result identity and calculation version, objectives revision, and relevant draft revision. A timestamp alone is insufficient.
+- A worker may persist the outcome of a stale attempt, but it cannot attach that result as current or overwrite newer draft content. Changed semantic inputs require a new logical analysis operation.
+- Versions and completed PDFs are immutable. Restoring an older version copies its snapshot into a new revisioned active draft rather than mutating, renumbering, or replacing history.
+
+### Logical analysis and PDF jobs
+
+Both logical job types use exactly `queued`, `running`, `succeeded`, and `failed`. PostgreSQL is authoritative for state and attempts; Redis/Celery only delivers work. Idempotency keys, database uniqueness, and transactional transitions make repeated clicks and broker redelivery safe. Attempts retain retry-specific timestamps and sanitized failures, while clients receive stable safe errors rather than provider details.
+
+- An analysis operation binds to one confirmed semantic input identity and one metric result. Retry may add an attempt or safely requeue the failed logical job only while that identity remains unchanged; it cannot create duplicate current results, replace a prior valid result on failure, or overwrite newer work.
+- A PDF operation binds to one immutable report version, snapshot input identity, and template version. Retry adds an attempt or safely requeues that same logical export; it cannot create a report version, switch versions, or render from a mutable draft.
 
 ## CSV and Metric Baseline
 
@@ -192,20 +192,40 @@ Structured output contains:
 
 The backend validates the result with Pydantic before persistence or display. Analysis must distinguish direct observations from causal hypotheses, avoid unsupported period comparisons, and avoid inventing figures. Provider errors, refusals, incomplete responses, and schema failures produce a failed job that can be retried.
 
+## MVP Acceptance Criteria
+
+### Steps 1–3: create, import, and confirm
+
+- **Step 1 — create:** An authenticated user can create an owner-scoped report only with a non-empty name, an inclusive period whose end is not before its start, and at least one objective. Success creates one revisioned draft in `created` without a version or job; invalid input returns stable field-level errors and creates nothing.
+- **Step 2 — preserve and preview:** Pasted text is stored unchanged with provenance and checksum. A CSV within configured size, content-type, and encoding limits is stored immutably through the storage abstraction with safe filename handling and an authorized preview; rejected files create no confirmed import, job, or public object reference. Both source types are treated as untrusted data and enter `source_review`; pasted claims remain labeled rather than becoming validated metrics.
+- **Step 3 — map, normalize, and confirm:** CSV preview supports user-correctable mapping to `date`, `campaign_name`, `currency`, `impressions`, `clicks`, `spend`, and `leads`. Required dimensions and at least one measure must be mapped; measures normalize to non-negative numbers and currencies to valid uppercase ISO 4217 codes. Missing/duplicate mappings, unmapped columns, bad rows, ambiguous dates, unsupported currencies, and mixed-currency risks are explicit warnings or blocking errors. Only explicit confirmation after blocking errors are resolved persists the configuration/canonical-data identity and permits analysis. Pasted text receives an equivalent explicit source-review confirmation gate.
+
+### Step 4: calculate and analyze
+
+- Deterministic Python calculates aggregate CTR, CPC, CPM, and CPL; it never averages row ratios. Missing, invalid, incompatible, or zero-denominator inputs yield an unavailable metric with a reason, never zero, infinity, `NaN`, or an invented substitute. Spend metrics stay within one ISO 4217 currency group, no conversion is implicit, and incompatible periods are not compared.
+- An owner-authorized, persisted, idempotent logical analysis job captures the current semantic input and moves through the shared job states. AI receives only computed metrics, explicit limitations and objectives, plus bounded, delimited untrusted excerpts or labeled claims; AI does not perform arithmetic or invent figures.
+- Success requires the structured output schema and persists model, prompt, request, and numeric-source provenance before attachment. Timeouts, refusals, incomplete or invalid schemas, and provider errors become explicit sanitized failures with retry. Retry remains bound to unchanged input, and a stale result may be recorded but cannot attach to or overwrite newer work.
+
+### Steps 5–7: review, version, export, and reopen
+
+- **Step 5 — review and edit:** The owner sees computed metrics/charts with units and availability, limitations and data gaps, editable narrative, labeled claims, and AI provenance. Narrative saves use the expected revision; conflicts do not overwrite content, and a successful draft save creates no version.
+- **Step 6 — version and export:** An owner-authorized, idempotent transaction creates one sequential immutable version from the exact current draft revision with the complete reproducibility snapshot. PDF generation is a separate persisted logical job rendered only from that version and template. Later draft changes cannot alter the saved version or completed PDF; failed export retry targets the same version without creating another.
+- **Step 7 — history and restoration:** The owner receives ordered immutable history with creation/provenance summaries and persisted PDF status. Completed PDFs download only through an authorized backend response or short-lived signed URL. Retry remains bound to the selected historical version, and restoring history creates a new revisioned active draft while every historical version and PDF remains unchanged.
+
 ## Version and PDF Invariants
 
 Each immutable report version preserves:
 
+- Report metadata, reporting period, exact source draft revision, and sequential version identity.
 - Source references and checksums.
-- Confirmed mappings and normalization settings.
-- Calculated metrics and their availability metadata.
-- AI analysis and user-edited narrative content.
-- AI model identifier and prompt version.
+- Confirmed mappings, normalization settings, validation summary, and canonical-data identity.
+- Calculated metrics, inputs, scopes, currencies, calculation version, and availability metadata.
+- Validated AI analysis, user-edited narrative content, limitations, and labeled claims.
+- AI model identifier, prompt version, and request provenance.
 - Report template version.
-- Version number and creation timestamp.
-- PDF reference and export status.
+- Creation timestamp.
 
-PDF rendering consumes only the version snapshot. A failed export leaves the version intact, and export retry targets the same version without creating a duplicate.
+PDF export is a separate version-bound logical operation. Rendering consumes only the version snapshot; a failed export leaves the version intact, and export retry targets the same version without creating or switching a report version.
 
 ## Access Control
 
@@ -260,6 +280,20 @@ Complete these stages sequentially. For every stage after project instructions, 
 
 - Run migration, unit, integration, worker, PDF, and browser suites.
 - Verify KPI correctness, version immutability, safe repeated clicks and retries, ownership isolation, and the complete browser journey.
+
+### Downstream verification matrix
+
+Each focused stage owns the evidence for its behavior and must name applicable lifecycle scenarios and exact verification commands in its proposal and tasks. This allocation does not authorize an umbrella implementation; stages remain sequential, and live OpenAI or object-storage checks remain opt-in while deterministic fakes and fixed snapshots run by default.
+
+| Owning focused stage | Required evidence before handoff |
+|---|---|
+| Database and local infrastructure | PostgreSQL integration tests for UUID, foreign-key, and check constraints; ownership filters; revisions; legal job transitions; unique idempotency; immutable snapshots; and migration upgrade verification |
+| Backend foundation/API | Contract tests for field validation, stable error codes, owner authorization on every resource, optimistic draft conflicts, persisted-state serialization, and repeated-click idempotency |
+| Data import and calculation | Unit and integration tests for original preservation; upload size/type/encoding; previews; mappings; confirmation gates; invalid rows; ISO 4217 normalization; aggregate formulas; zero denominators; missing inputs; mixed currencies; and period comparability |
+| Background jobs and AI | Deterministic fake-provider and worker tests for queue/run/succeed/fail transitions, redelivery, retry, stale input, bounded untrusted context, structured-result validation, refusals/timeouts, and AI provenance |
+| Versioning and PDF | Integration and fixed-snapshot rendering tests for atomic version numbers, complete immutable snapshots, repeated version clicks, exact-version PDF content, export failure/retry, authorized download, and draft cloning |
+| Frontend | Component and browser tests for explicit loading, empty, validation, job, failure, unavailable, retry, and conflict states; keyboard/focus behavior; unsaved-edit preservation; and the seven-step journey |
+| Integrated verification | PostgreSQL-backed and browser evidence for create/import/confirm/analyze/edit/version/export/history, ownership isolation, and safe repeated delivery, clicks, and retries |
 
 ## Environment Configuration
 

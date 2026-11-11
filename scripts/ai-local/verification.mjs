@@ -415,6 +415,12 @@ export function validateStructuredVerification(value, manifest, checkSummary) {
     if (!Array.isArray(result.evidence) || !Array.isArray(result.commandEvidenceIds)) {
       throw new VerificationError("semantic_result_invalid", `Evidence arrays are required for ${result.id}.`);
     }
+    if (new Set(result.commandEvidenceIds).size !== result.commandEvidenceIds.length) {
+      throw new VerificationError(
+        "semantic_result_duplicate_command_evidence",
+        `Result ${result.id} cites a command more than once.`,
+      );
+    }
     if (result.verdict === "passed" && result.evidence.filter((entry) => typeof entry === "string" && entry.trim()).length === 0) {
       throw new VerificationError("semantic_result_evidence_missing", `Passing result ${result.id} has no concrete evidence.`);
     }
