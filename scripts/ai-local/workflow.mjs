@@ -2,6 +2,11 @@ import path from "node:path";
 
 import { runCodexPlanning } from "./codex.mjs";
 import { loadConfiguration } from "./config.mjs";
+import {
+  assertConfiguredRepository,
+  parseGitHubIssueUrl,
+  resolveExplicitIssue,
+} from "./explicit-issue.mjs";
 import { createGitHubClient } from "./github.mjs";
 import { fetchIssueContext } from "./issue.mjs";
 import { acquireRepositoryLock } from "./lock.mjs";
@@ -38,10 +43,16 @@ function displayProposal(output, validated, kind) {
   output.write("No implementation or GitHub state change was performed.\n");
 }
 
-export async function runPlanningWorkflow(_options = {}, dependencies = {}) {
+export async function runPlanningWorkflow(options = {}, dependencies = {}) {
   const output = dependencies.output ?? process.stdout;
   const repositoryRoot = dependencies.repositoryRoot ?? process.cwd();
   const config = await (dependencies.loadConfiguration ?? loadConfiguration)({ repositoryRoot });
+  const explicitTarget = options.issueUrl
+    ? assertConfiguredRepository(
+        options.issueTarget ?? parseGitHubIssueUrl(options.issueUrl),
+        config.github.repository,
+      )
+    : null;
   const runCommand = createPolicyTransport(dependencies.runCommand ?? runProcess);
   const runtimePaths = await (dependencies.ensureRuntimeLayout ?? ensureRuntimeLayout)(config.runtimePath);
   const ownedPrompt = dependencies.prompt ? null : createTerminalPrompt();
@@ -63,7 +74,13 @@ export async function runPlanningWorkflow(_options = {}, dependencies = {}) {
     const github = dependencies.githubClient ?? createGitHubClient({ cwd: repositoryRoot, runCommand });
     const project = await (dependencies.resolveProject ?? resolveProject)(github, config);
     const items = await (dependencies.fetchEligibleItems ?? fetchEligibleItems)(github, project, config);
-    const selection = await (dependencies.selectIssue ?? selectIssue)(items, { prompt, output });
+    const selection = explicitTarget
+      ? (dependencies.resolveExplicitIssue ?? resolveExplicitIssue)(
+          items,
+          explicitTarget,
+          config.github.todoOption,
+        )
+      : await (dependencies.selectIssue ?? selectIssue)(items, { prompt, output });
     if (selection.kind !== "selected") return selection;
 
     const issue = await (dependencies.fetchIssueContext ?? fetchIssueContext)(github, selection.item);

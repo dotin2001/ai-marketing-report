@@ -34,6 +34,14 @@ npm run ai:local
 
 The CLI acquires the repository lock, lists only exact eligible `Todo` issues from the configured repository, and lets you select or cancel. End-of-input, an empty answer, `q`, `quit`, or `cancel` exits without a proposal or GitHub mutation. Issue bodies and all comments are retained as untrusted data with provenance; they are never interpreted as commands.
 
+When you already know the issue, target it by canonical URL:
+
+```sh
+npm run ai:local -- --issue https://github.com/dotin2001/ai-marketing-report/issues/2
+```
+
+The standalone `--` tells npm to forward the following `--issue` option to the local CLI. The URL must use HTTPS on `github.com`, have the exact path `/<owner>/<repository>/issues/<positive-number>` with at most a trailing slash, contain no credentials, port, query, or fragment, and name the configured repository. The issue must resolve to exactly one item whose status is the configured exact `Todo` option in the configured Project. URL-targeted planning bypasses only the numbered selector; it retains complete Project pagination, live issue and comment loading, duplicate-link detection, traceability, validation, and every no-mutation boundary.
+
 For a new issue, the CLI invokes Codex with the literal skill request `$openspec-propose`, then independently checks the artifacts, traceability marker, requirements/check definitions, and strict OpenSpec validation. If an active proposal already links the same issue, the CLI offers to reuse it instead of creating a duplicate. Planning stops after reporting validated artifact paths.
 
 Review the proposal, design, specifications, and tasks. Applying the change is a separate, deliberate Codex action—this is a skill invocation, not a shell executable:
@@ -103,6 +111,7 @@ Authentication failures happen before Project reads or writes. Repair them with 
 
 ```text
 npm run ai:local
+npm run ai:local -- --issue <github-issue-url>
 npm run ai:local -- --sync-task
 npm run ai:local -- --sync-task --change <change-id>
 npm run ai:local -- --help

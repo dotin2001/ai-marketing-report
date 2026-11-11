@@ -1,9 +1,11 @@
 import { UsageError, WorkflowError } from "./errors.mjs";
+import { parseGitHubIssueUrl } from "./explicit-issue.mjs";
 import { runSynchronizationWorkflow } from "./sync-workflow.mjs";
 import { runPlanningWorkflow } from "./workflow.mjs";
 
 export const HELP_TEXT = `Usage:
   npm run ai:local
+  npm run ai:local -- --issue <github-issue-url>
   npm run ai:local -- --sync-task [--change <change-id>]
   npm run ai:local -- --help
 
@@ -12,6 +14,7 @@ Modes:
   --sync-task             Verify an implemented change and synchronize Todo to Done.
 
 Options:
+  --issue <url>           Plan one eligible Todo issue from its canonical GitHub URL.
   --change <change-id>    Select the linked OpenSpec change for synchronization.
   -h, --help              Show this help text.
 
@@ -28,6 +31,8 @@ export function parseArguments(args) {
 
   let syncTask = false;
   let changeId;
+  let issueUrl;
+  let issueTarget;
   let help = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -54,6 +59,19 @@ export function parseArguments(args) {
       index += 1;
       continue;
     }
+    if (argument === "--issue") {
+      if (issueUrl !== undefined) {
+        throw new UsageError("--issue may be provided only once.");
+      }
+      const value = args[index + 1];
+      if (!value || value.startsWith("-")) {
+        throw new UsageError("--issue requires a canonical GitHub issue URL.");
+      }
+      issueUrl = value;
+      issueTarget = parseGitHubIssueUrl(value);
+      index += 1;
+      continue;
+    }
     if (argument === "--help" || argument === "-h") {
       if (help) {
         throw new UsageError("The help option may be provided only once.");
@@ -70,12 +88,21 @@ export function parseArguments(args) {
   if (changeId && !syncTask) {
     throw new UsageError("--change is valid only with --sync-task.");
   }
+  if (issueUrl && syncTask) {
+    throw new UsageError("--issue cannot be combined with --sync-task.");
+  }
+  if (issueUrl && changeId) {
+    throw new UsageError("--issue cannot be combined with --change.");
+  }
 
   if (help) {
     return { mode: "help" };
   }
   if (syncTask) {
     return { mode: "sync", changeId };
+  }
+  if (issueUrl) {
+    return { mode: "planning", issueUrl, issueTarget };
   }
   return { mode: "planning" };
 }

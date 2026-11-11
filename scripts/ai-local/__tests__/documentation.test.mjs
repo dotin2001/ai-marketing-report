@@ -14,6 +14,7 @@ test("documented workflow commands match CLI help and referenced files exist", a
   ]);
   for (const command of [
     "npm run ai:local",
+    "npm run ai:local -- --issue <github-issue-url>",
     "npm run ai:local -- --sync-task",
     "npm run ai:local -- --sync-task --change <change-id>",
     "npm run ai:local -- --help",
@@ -21,9 +22,14 @@ test("documented workflow commands match CLI help and referenced files exist", a
     assert.match(guide, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(HELP_TEXT, /npm run ai:local -- --sync-task \[--change <change-id>\]/);
+  assert.match(HELP_TEXT, /npm run ai:local -- --issue <github-issue-url>/);
+  assert.match(guide, /standalone `--` tells npm to forward/);
+  assert.match(guide, /exact `Todo` option/);
+  assert.match(guide, /duplicate-link detection/);
   assert.match(guide, /\$openspec-apply-change <change-id>/);
   assert.match(guide, /issue remains open/i);
   assert.match(readme, /docs\/ai-local-workflow\.md/);
+  assert.match(readme, /npm run ai:local -- --issue/);
   await Promise.all([
     access(path.join(repositoryRoot, "ai-local.config.json")),
     access(path.join(repositoryRoot, "package.json")),
