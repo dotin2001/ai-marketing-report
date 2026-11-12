@@ -16,3 +16,5 @@ For synchronization, a normal non-empty issue description is sufficient and beco
 The issue always remains open. The automation never switches branches, commits, pushes, merges, rebases, deploys, destructively cleans the worktree, or updates a non-selected Project item.
 
 See [Local AI Planning and Project Synchronization](docs/ai-local-workflow.md) for authentication, configuration, every Todo-to-Done gate, evidence/redaction limits, lock recovery, and troubleshooting.
+
+See [Local development](docs/local-development.md) for the pinned frontend/backend toolchain, environment setup, SeaweedFS dependency stack, health checks, verification commands, ordinary shutdown, and the separately labeled destructive reset.

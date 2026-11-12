@@ -3,12 +3,35 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.8",
   "scripts": {
     "ai:local": "node scripts/ai-local.mjs",
     "test": "node --test scripts/ai-local/__tests__/*.test.mjs",
-    "check": "node scripts/ai-local/check.mjs"
+    "check": "node scripts/ai-local/check.mjs",
+    "frontend:install": "npm --prefix frontend ci",
+    "frontend:lint": "npm --prefix frontend run lint",
+    "frontend:typecheck": "npm --prefix frontend run typecheck",
+    "frontend:test": "npm --prefix frontend test",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:check": "npm run frontend:lint && npm run frontend:typecheck && npm run frontend:test && npm run frontend:build",
+    "backend:sync": "uv --cache-dir backend/.uv-cache --directory backend sync --locked --all-groups",
+    "backend:format:check": "uv --cache-dir backend/.uv-cache --directory backend run ruff format --check .",
+    "backend:lint": "uv --cache-dir backend/.uv-cache --directory backend run ruff check .",
+    "backend:typecheck": "uv --cache-dir backend/.uv-cache --directory backend run mypy app tests",
+    "backend:test": "uv --cache-dir backend/.uv-cache --directory backend run pytest",
+    "backend:import": "uv --cache-dir backend/.uv-cache --directory backend run python -c \"from app.main import create_app; assert callable(create_app)\"",
+    "backend:check": "npm run backend:format:check && npm run backend:lint && npm run backend:typecheck && npm run backend:test && npm run backend:import",
+    "environment:check": "node scripts/foundation/check-environment-contract.mjs",
+    "environment:test": "node --test scripts/foundation/__tests__/*.test.mjs",
+    "infra:validate": "node scripts/foundation/check-compose.mjs",
+    "infra:up": "docker compose -p mkt-rp-assistant --env-file infra/.env -f infra/compose.yaml up -d",
+    "infra:down": "docker compose -p mkt-rp-assistant --env-file infra/.env -f infra/compose.yaml down",
+    "foundation:stack": "node scripts/foundation/verify-stack.mjs",
+    "foundation:live": "node scripts/foundation/verify-foundation.mjs",
+    "foundation:check": "npm run environment:test && npm run environment:check && npm run infra:validate && npm run frontend:check && npm run backend:check"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.23.2 <23",
+    "npm": ">=10.9.8 <11"
   }
 }

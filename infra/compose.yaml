@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: postgres:17.6-alpine3.22
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in infra/.env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in infra/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/.env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:?Set POSTGRES_PORT in infra/.env}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.2.1-alpine3.22
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in infra/.env}
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:?Set REDIS_PORT in infra/.env}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -qx PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    restart: unless-stopped
+
+  object-storage:
+    image: chrislusf/seaweedfs:4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?Set S3_ACCESS_KEY_ID in infra/.env}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?Set S3_SECRET_ACCESS_KEY in infra/.env}
+      AWS_REGION: ${S3_REGION:?Set S3_REGION in infra/.env}
+    command:
+      - server
+      - -dir=/data
+      - -s3
+      - -s3.port=9000
+      - -master.port=9333
+      - -volume.port=8080
+      - -filer.port=8888
+      - -ip=object-storage
+      - -ip.bind=0.0.0.0
+    ports:
+      - "127.0.0.1:${S3_API_PORT:?Set S3_API_PORT in infra/.env}:9000"
+      - "127.0.0.1:${S3_CONSOLE_PORT:?Set S3_CONSOLE_PORT in infra/.env}:9333"
+    volumes:
+      - object-storage-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "printf 's3.bucket.list\n' | weed shell -master=127.0.0.1:9333 -filer=127.0.0.1:8888 >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  object-storage-init:
+    image: chrislusf/seaweedfs:4.53@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0
+    depends_on:
+      object-storage:
+        condition: service_healthy
+    environment:
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in infra/.env}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        case "$$S3_BUCKET" in
+          ""|*[!a-z0-9.-]*) echo "S3_BUCKET must be a lowercase DNS-style bucket name" >&2; exit 1 ;;
+        esac
+        list_buckets() {
+          printf 's3.bucket.list\n' | weed shell -master=object-storage:9333 -filer=object-storage:8888
+        }
+        if ! list_buckets | grep -Eq "(^|[[:space:]])$$S3_BUCKET([[:space:]]|$$)"; then
+          printf 's3.bucket.create -name=%s\n' "$$S3_BUCKET" |
+            weed shell -master=object-storage:9333 -filer=object-storage:8888
+        fi
+        list_buckets | grep -Eq "(^|[[:space:]])$$S3_BUCKET([[:space:]]|$$)"
+    restart: "no"
+
+volumes:
+  postgres-data:
+    name: mkt-rp-assistant-postgres-data
+  redis-data:
+    name: mkt-rp-assistant-redis-data
+  object-storage-data:
+    name: mkt-rp-assistant-object-storage-data

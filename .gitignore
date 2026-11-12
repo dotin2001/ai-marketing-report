@@ -1,1 +1,25 @@
 .ai-local/
+
+# Frontend dependencies and generated output
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+frontend/*.tsbuildinfo
+frontend/.env.local
+
+# Backend environments, caches, and generated reports
+backend/.venv/
+backend/.uv-cache/
+backend/__pycache__/
+backend/**/*.py[cod]
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.coverage
+backend/htmlcov/
+backend/coverage.xml
+backend/.env
+
+# Local infrastructure credentials
+infra/.env
