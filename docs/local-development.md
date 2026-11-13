@@ -29,6 +29,8 @@ The infrastructure process consumes `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PA
 
 The backend consumes `APP_ENV`, `APP_HOST`, `APP_PORT`, `HEALTH_CHECK_TIMEOUT_SECONDS`, `LOG_LEVEL`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `REDIS_PASSWORD`, `REDIS_URL`, `S3_ENDPOINT_URL`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, and `S3_USE_SSL`. For local development, `DATABASE_URL` uses `postgresql+psycopg://`, `REDIS_URL` uses `redis://`, `S3_ENDPOINT_URL` is the loopback SeaweedFS S3 URL, and `S3_USE_SSL=false`.
 
+Migration commands read the server-only `MIGRATION_DATABASE_URL`. PostgreSQL integration tests read the server-only `TEST_DATABASE_URL`; it must name a separate database ending in `_test`, use an approved local or CI host, differ from `DATABASE_URL`, and be used only with `APP_ENV=test`. Neither variable is loaded by the web-process `Settings` model or exposed to the frontend.
+
 The frontend consumes only `NEXT_PUBLIC_API_BASE_URL`. Never put a password, access key, database URL, Redis URL, or provider key in a `NEXT_PUBLIC_` variable.
 
 Install locked dependencies:
@@ -73,9 +75,51 @@ Default local endpoints are:
 
 Changing a host-port value in `infra/.env` also requires updating the matching backend URL or manual browser URL. A healthy liveness response is `{"status":"ok"}`. Healthy readiness returns `status: "ready"` with `postgresql`, `redis`, and `object_storage` marked ready.
 
+## Database migrations and isolated tests
+
+Alembic is the only product-schema writer. Application startup never calls `create_all`, runs a migration, or changes schema state. Do not manually create, alter, or drop product tables in a shared development, CI, staging, or production database. Review schema changes through a new Alembic revision and verify them against an isolated database.
+
+Set `MIGRATION_DATABASE_URL` to the database being migrated. For ordinary local development it may identify the same local database as `DATABASE_URL`; use a separate migration-role credential where one is configured. These commands do not print the URL:
+
+```sh
+uv --directory backend run alembic upgrade head
+uv --directory backend run alembic current
+uv --directory backend run alembic upgrade head --sql
+```
+
+The last command emits offline SQL for review and does not open a database connection. The initial revision's `downgrade base` is intentionally guarded and succeeds only when every reporting product table is empty:
+
+```sh
+uv --directory backend run alembic downgrade base
+```
+
+If any reporting row exists, the downgrade aborts transactionally and leaves both schema and data at the current revision. Never bypass that guard. Once data exists, rollback requires a separately reviewed forward migration.
+
+PostgreSQL integration tests require a disposable database named with the `_test` suffix. Create it once using your local PostgreSQL administration workflow, grant the test role full control of that database only, then set:
+
+```sh
+export APP_ENV=test
+export TEST_DATABASE_URL='postgresql+psycopg://TEST_ROLE:TEST_PASSWORD@127.0.0.1:5432/marketing_reports_test'
+export MIGRATION_DATABASE_URL="$TEST_DATABASE_URL"
+```
+
+`TEST_DATABASE_URL` must differ from `DATABASE_URL`. The test guard also rejects a non-test environment, a database without the `_test` suffix, and an unapproved remote host before any destructive migration or cleanup runs. Keep real values in ignored local environment files or the CI secret store; never commit or paste them into logs.
+
+From a clean checkout, after locked dependency installation and `npm run infra:up`, initialize the disposable schema and run the database checks:
+
+```sh
+uv --directory backend run alembic upgrade head
+npm run database:test:unit
+npm run database:test:integration
+npm run database:migrations:verify
+npm run database:check
+```
+
+The database integration suites require PostgreSQL only. They do not contact Redis, object storage, OpenAI, or a PDF renderer.
+
 ## Verification
 
-Fast checks do not need running containers or external accounts:
+Frontend, environment-contract, and repository workflow checks do not need external accounts:
 
 ```sh
 npm test
@@ -84,8 +128,9 @@ npm run environment:test
 npm run environment:check
 npm run infra:validate
 npm run frontend:check
-npm run backend:check
 ```
+
+`npm run backend:check` includes the PostgreSQL integration suite and therefore requires the isolated test configuration above and a running local PostgreSQL service. It still requires no Redis, object-storage, OpenAI, or PDF service.
 
 The stack check starts and stops the fixed `mkt-rp-assistant` Compose project, verifies the private bucket and persistence over two start cycles, and preserves named volumes:
 

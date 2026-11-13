@@ -1,0 +1,1 @@
+"""Reporting database integration tests."""

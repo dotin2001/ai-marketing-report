@@ -5,9 +5,11 @@ import { validateContractTexts } from "../check-environment-contract.mjs";
 
 const valid = {
   backendConfig: 'value: str = Field(validation_alias="SERVER_SECRET")',
-  backendExample: "SERVER_SECRET=CHANGE_ME_PRIVATE_VALUE\n",
+  backendExample:
+    "SERVER_SECRET=CHANGE_ME_PRIVATE_VALUE\nMIGRATION_DATABASE_URL=postgresql://user:secret@localhost/app\nTEST_DATABASE_URL=postgresql://user:secret@localhost/app_test\n",
   compose: "environment:\n  SERVER_SECRET: ${SERVER_SECRET:?Set SERVER_SECRET}\n",
-  docs: "Replace SERVER_SECRET and set NEXT_PUBLIC_API_BASE_URL.",
+  docs:
+    "Replace SERVER_SECRET, MIGRATION_DATABASE_URL, and TEST_DATABASE_URL; set NEXT_PUBLIC_API_BASE_URL.",
   frontendExample: "NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000\n",
   infraExample: "SERVER_SECRET=CHANGE_ME_PRIVATE_VALUE\n",
 };

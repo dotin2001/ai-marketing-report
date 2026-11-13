@@ -5,6 +5,7 @@ import path from "node:path";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const secretNamePattern = /(PASSWORD|SECRET|ACCESS_KEY|API_KEY|DATABASE_URL|REDIS_URL)/u;
+const serverOnlyBackendKeys = new Set(["MIGRATION_DATABASE_URL", "TEST_DATABASE_URL"]);
 
 function environmentKeys(contents) {
   return new Set(
@@ -32,10 +33,11 @@ function assertContainsAll(actual, expected, location) {
 export function validateContractTexts({ backendConfig, backendExample, compose, docs, frontendExample, infraExample }) {
   const backendKeys = backendAliases(backendConfig);
   const backendExampleKeys = environmentKeys(backendExample);
+  const expectedBackendExampleKeys = new Set([...backendKeys, ...serverOnlyBackendKeys]);
   assert.deepEqual(
     [...backendExampleKeys].sort(),
-    [...backendKeys].sort(),
-    "backend/.env.example must match typed backend settings exactly",
+    [...expectedBackendExampleKeys].sort(),
+    "backend/.env.example must match typed settings plus approved server-only database URLs",
   );
 
   const composeKeys = composeVariables(compose);
@@ -57,6 +59,11 @@ export function validateContractTexts({ backendConfig, backendExample, compose, 
   }
 
   assertContainsAll(new Set(docs.match(/[A-Z][A-Z0-9_]+/gu) ?? []), backendKeys, "local setup guide");
+  assertContainsAll(
+    new Set(docs.match(/[A-Z][A-Z0-9_]+/gu) ?? []),
+    serverOnlyBackendKeys,
+    "local setup guide",
+  );
   assertContainsAll(new Set(docs.match(/[A-Z][A-Z0-9_]+/gu) ?? []), composeKeys, "local setup guide");
   assertContainsAll(new Set(docs.match(/[A-Z][A-Z0-9_]+/gu) ?? []), frontendKeys, "local setup guide");
 }

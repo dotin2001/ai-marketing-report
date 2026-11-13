@@ -46,9 +46,11 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
 def test_each_required_setting_is_enforced(
     valid_settings_data: dict[str, Any],
     missing_name: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     invalid = valid_settings_data.copy()
     invalid.pop(missing_name)
+    monkeypatch.delenv(missing_name, raising=False)
 
     with pytest.raises(ValidationError) as error:
         build(invalid)
