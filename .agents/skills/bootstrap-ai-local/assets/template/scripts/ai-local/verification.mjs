@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { buildCheckEnvironment, normalizeCheckPlan } from "./check-plan.mjs";
 import { ProcessError, VerificationError } from "./errors.mjs";
 import { redact, runProcess } from "./process.mjs";
 
@@ -39,15 +40,19 @@ function sourceReference(file, line) {
 }
 
 export function parseIssueAcceptanceCriteria(issue) {
-  const lines = String(issue.body ?? "").split(/\r?\n/);
+  const body = String(issue.body ?? "");
+  const lines = body.split(/\r?\n/);
   const criteria = [];
   let inSection = false;
   let sectionLevel = 0;
+  let sawAcceptanceHeading = false;
   for (let index = 0; index < lines.length; index += 1) {
-    const heading = lines[index].match(/^(#{1,6})\s+(.+?)\s*$/);
+    const heading = lines[index].match(/^ {0,3}(#{1,6})[ \t]+(.+?)\s*$/);
     if (heading) {
       const level = heading[1].length;
-      if (/acceptance\s+criteria/i.test(heading[2])) {
+      const headingText = heading[2].replace(/[ \t]+#+[ \t]*$/, "").trim();
+      if (/acceptance\s+criteria/i.test(headingText)) {
+        sawAcceptanceHeading = true;
         inSection = true;
         sectionLevel = level;
         continue;
@@ -67,13 +72,29 @@ export function parseIssueAcceptanceCriteria(issue) {
       );
     }
   }
-  if (criteria.length === 0) {
+  if (criteria.length > 0) return criteria;
+  if (sawAcceptanceHeading) {
     throw new VerificationError(
-      "acceptance_criteria_missing",
-      "The current issue has no parseable Acceptance Criteria section.",
+      "acceptance_criteria_malformed",
+      "The current issue has an Acceptance Criteria heading but no parseable bullet items.",
     );
   }
-  return criteria;
+  const request = body.trim();
+  if (!request) {
+    throw new VerificationError(
+      "issue_request_missing",
+      "The current issue body is empty; add a task request before synchronization.",
+    );
+  }
+  const firstContentLine = lines.findIndex((line) => line.trim().length > 0) + 1;
+  return [
+    Object.freeze({
+      id: "issue:request",
+      kind: "issue_criterion",
+      text: request,
+      source: Object.freeze({ issueId: issue.id, issueUrl: issue.url, line: firstContentLine }),
+    }),
+  ];
 }
 
 export function parseSpecification(text, filePath) {
@@ -231,12 +252,7 @@ function commandsFromMarkdown(text, source) {
   return commands;
 }
 
-function packageScriptArgs(packageManager, script) {
-  if (packageManager === "npm" && script === "test") return ["npm", "test"];
-  return [packageManager, "run", script];
-}
-
-export async function discoverVerificationChecks({ repositoryRoot, changeId, manifest, config = {} }) {
+export async function discoverVerificationChecks({ repositoryRoot, changeId, manifest, configuration = {} }) {
   const checks = [
     {
       args: ["openspec", "validate", changeId, "--strict", "--json"],
@@ -245,26 +261,32 @@ export async function discoverVerificationChecks({ repositoryRoot, changeId, man
     },
   ];
 
-  for (const [index, entry] of (config.verification?.commands ?? []).entries()) {
+  for (const [index, entry] of (configuration.verification?.commands ?? []).entries()) {
     checks.push({
       args: [entry.command, ...entry.args],
       timeoutMs: entry.timeoutMs,
-      source: `${config.configPath ?? "ai-local.config.json"}#verification.commands[${index}]`,
+      configuredExecutionProfile: entry.executionProfile,
+      source: `${configuration.configPath ?? "ai-local.config.json"}#verification.commands[${index}]`,
       rationale: "Explicit required verification command from ai-local configuration.",
     });
   }
 
-  if (config.verification?.autoDiscover === false) {
-    return finalizeChecks(checks);
+  if (configuration.verification?.autoDiscover === false) {
+    return finalizeChecks(checks, {}, configuration);
   }
 
   const packagePath = path.join(repositoryRoot, "package.json");
+  let packageScripts = {};
   try {
     const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+    packageScripts = packageJson.scripts ?? {};
     for (const script of ["test", "check", "lint", "typecheck", "type-check", "build"]) {
       if (typeof packageJson.scripts?.[script] === "string") {
+        const packageManager = configuration.packageManager ?? "npm";
         checks.push({
-          args: packageScriptArgs(config.packageManager ?? "npm", script),
+          args: packageManager === "npm" && script === "test"
+            ? ["npm", "test"]
+            : [packageManager, "run", script],
           source: `${packagePath}#scripts.${script}`,
           rationale: `Declared package ${script} script applies to the current repository.`,
         });
@@ -318,10 +340,10 @@ export async function discoverVerificationChecks({ repositoryRoot, changeId, man
     if (error.code !== "ENOENT") throw error;
   }
 
-  return finalizeChecks(checks);
+  return finalizeChecks(checks, packageScripts, configuration);
 }
 
-function finalizeChecks(checks) {
+function finalizeChecks(checks, packageScripts, configuration) {
   const deduplicated = new Map();
   for (const check of checks) {
     const key = JSON.stringify(check.args);
@@ -336,11 +358,12 @@ function finalizeChecks(checks) {
           rationale: check.rationale,
           required: true,
           timeoutMs: check.timeoutMs ?? (check.args.at(-1) === "build" ? 10 * 60_000 : 5 * 60_000),
+          configuredExecutionProfile: check.configuredExecutionProfile,
         }),
       );
     }
   }
-  return Object.freeze([...deduplicated.values()]);
+  return normalizeCheckPlan([...deduplicated.values()], { packageScripts, configuration });
 }
 
 function bounded(value, limit = 16 * 1024) {
@@ -350,9 +373,10 @@ function bounded(value, limit = 16 * 1024) {
 
 export async function executeRequiredChecks(
   checks,
-  { repositoryRoot = process.cwd(), runCommand = runProcess } = {},
+  { repositoryRoot = process.cwd(), runCommand = runProcess, environment = process.env, preflightPostgres } = {},
 ) {
   const results = [];
+  let postgresPreflight;
   for (const check of checks) {
     if (check.applicable === false) {
       results.push(
@@ -372,10 +396,34 @@ export async function executeRequiredChecks(
       continue;
     }
     const startedAt = Date.now();
+    if (check?.capabilities?.postgresql || check.executionProfile === "postgresql") {
+      if (!postgresPreflight) {
+        postgresPreflight = preflightPostgres
+          ? await preflightPostgres({ environment: buildCheckEnvironment(check, environment), check })
+          : Object.freeze({ passed: true });
+      }
+      if (!postgresPreflight.passed) {
+        results.push(Object.freeze({
+          checkId: check.id,
+          command: check.command,
+          args: check.args,
+          required: check.required,
+          state: "blocked",
+          durationMs: Date.now() - startedAt,
+          exitCode: null,
+          stdout: "",
+          stderr: "",
+          reason: postgresPreflight.message ?? "PostgreSQL preflight blocked this check.",
+          reasonCode: postgresPreflight.code ?? "postgres_preflight_unknown",
+        }));
+        continue;
+      }
+    }
     let processResult;
     try {
       processResult = await runCommand(check.command, [...check.args], {
         cwd: repositoryRoot,
+        env: buildCheckEnvironment(check, environment),
         timeoutMs: check.timeoutMs,
         maxOutputBytes: 64 * 1024,
       });
@@ -393,6 +441,7 @@ export async function executeRequiredChecks(
             stdout: "",
             stderr: "",
             reason: `Unable to start required command ${check.command}.`,
+            reasonCode: "command_start_failed",
           }),
         );
         continue;
@@ -416,6 +465,11 @@ export async function executeRequiredChecks(
         stdout: bounded(processResult.stdout),
         stderr: bounded(processResult.stderr),
         reason: processResult.timedOut ? "Required check timed out." : null,
+        reasonCode: processResult.timedOut
+          ? "command_timeout"
+          : processResult.exitCode === 0
+            ? null
+            : "test_assertion_failed",
       }),
     );
   }
@@ -428,7 +482,7 @@ export async function executeRequiredChecks(
 }
 
 export function validateStructuredVerification(value, manifest, checkSummary) {
-  if (!value || typeof value !== "object" || value.schemaVersion !== 1) {
+  if (!value || typeof value !== "object" || value.schemaVersion !== 2 || value.messageType !== "final") {
     throw new VerificationError("semantic_result_invalid", "Semantic verification schema version is missing or unsupported.");
   }
   if (!["passed", "failed"].includes(value.overallVerdict) || !Array.isArray(value.results)) {
@@ -476,9 +530,9 @@ export function validateStructuredVerification(value, manifest, checkSummary) {
       }
     }
   }
-  const missing = [...manifestById.keys()].filter((id) => !seen.has(id));
+  const missing = [...manifestById.keys()].filter((id) => !seen.has(id)).sort();
   if (missing.length) {
-    throw new VerificationError("semantic_result_coverage_invalid", "Semantic verification omitted manifest entries.", {
+    throw new VerificationError("semantic_result_coverage_invalid", `Semantic verification omitted manifest entries: ${missing.join(", ")}.`, {
       missing,
     });
   }
@@ -490,7 +544,8 @@ export function validateStructuredVerification(value, manifest, checkSummary) {
     );
   }
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
+    messageType: "final",
     overallVerdict: value.overallVerdict,
     results: Object.freeze(value.results.map((result) => Object.freeze({ ...result }))),
     passed: value.overallVerdict === "passed" && allPassed && checkSummary.passed,

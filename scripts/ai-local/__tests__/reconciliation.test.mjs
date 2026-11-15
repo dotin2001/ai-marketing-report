@@ -26,7 +26,8 @@ const passedSummary = {
 
 function semantic(verdict = "passed") {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    messageType: "final",
     overallVerdict: verdict === "passed" ? "passed" : "failed",
     results: manifest.entries.map((entry, index) => ({
       id: entry.id,

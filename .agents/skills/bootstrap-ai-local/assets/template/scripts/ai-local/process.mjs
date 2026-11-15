@@ -9,6 +9,7 @@ const SECRET_PATTERNS = [
   /\bBearer\s+[^\s]+/gi,
 ];
 const QUERY_SECRET_PATTERN = /([?&](?:access_)?token=)[^&\s]+/gi;
+const DATABASE_URL_PATTERN = /\bpostgres(?:ql)?(?:\+psycopg)?:\/\/[^\s"'`]+/gi;
 
 export function redact(value, secrets = []) {
   let result = String(value ?? "");
@@ -20,6 +21,7 @@ export function redact(value, secrets = []) {
   for (const pattern of SECRET_PATTERNS) {
     result = result.replace(pattern, "[REDACTED]");
   }
+  result = result.replace(DATABASE_URL_PATTERN, "[REDACTED_DATABASE_URL]");
   result = result.replace(QUERY_SECRET_PATTERN, "$1[REDACTED]");
   return result;
 }

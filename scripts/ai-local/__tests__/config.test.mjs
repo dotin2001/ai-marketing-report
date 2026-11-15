@@ -61,3 +61,41 @@ test("rejects malformed JSON", async () => {
     ConfigurationError,
   );
 });
+
+test("accepts neutral, backend-test, and PostgreSQL execution profiles", () => {
+  const config = validateConfiguration({
+    ...valid,
+    verification: {
+      executionProfiles: {
+        test: "neutral",
+        "backend:check": "backend-test",
+        "npm run database:check": "postgresql",
+      },
+      approvedPostgresHosts: ["localhost", "127.0.0.1"],
+    },
+  }, "/repo");
+
+  assert.deepEqual(config.verification.executionProfiles, {
+    "npm run test": "neutral",
+    "npm run backend:check": "backend-test",
+    "npm run database:check": "postgresql",
+  });
+});
+
+for (const [name, verification] of [
+  ["non-object verification", []],
+  ["non-object profiles", { executionProfiles: [] }],
+  ["unknown profile", { executionProfiles: { test: "production" } }],
+  ["credential-bearing selector", { executionProfiles: { "DATABASE_URL=postgresql://user:password@localhost/db_test npm test": "neutral" } }],
+  ["conflicting normalized selectors", { executionProfiles: { test: "neutral", "npm run test": "backend-test" } }],
+  ["empty approved hosts", { approvedPostgresHosts: [] }],
+  ["credential-bearing host", { approvedPostgresHosts: ["user:password@localhost"] }],
+  ["unknown verification field", { unsupported: true }],
+]) {
+  test(`rejects ${name}`, () => {
+    assert.throws(
+      () => validateConfiguration({ ...valid, verification }, "/repo"),
+      ConfigurationError,
+    );
+  });
+}

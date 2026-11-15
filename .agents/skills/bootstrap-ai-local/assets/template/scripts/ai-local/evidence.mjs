@@ -62,6 +62,7 @@ export function createEvidenceRecord({
         stdout: result.stdout,
         stderr: result.stderr,
         reason: result.reason,
+        reasonCode: result.reasonCode ?? null,
       })),
     },
     fingerprints,

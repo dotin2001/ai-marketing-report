@@ -126,6 +126,10 @@ export function fingerprintRequiredChecks(checks, toolVersions = {}) {
       required: check.required,
       timeoutMs: check.timeoutMs,
       applicable: check.applicable !== false,
+      applicabilityReason: check.applicabilityReason ?? null,
+      executionProfile: check.executionProfile ?? "neutral",
+      capabilities: check.capabilities ?? { backendTest: false, postgresql: false },
+      resolvedScripts: check.resolvedScripts ?? [],
     })),
     toolVersions,
   });

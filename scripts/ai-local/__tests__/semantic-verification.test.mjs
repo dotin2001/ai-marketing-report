@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { runCodexVerification } from "../codex.mjs";
+import { reconcileSemanticMessages, runCodexVerification } from "../codex.mjs";
 import { ensureRuntimeLayout } from "../runtime.mjs";
 import { validateStructuredVerification } from "../verification.mjs";
 
@@ -21,7 +21,8 @@ const checkSummary = {
 
 function passing() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    messageType: "final",
     overallVerdict: "passed",
     results: manifest.entries.map((entry) => ({
       id: entry.id,
@@ -111,4 +112,69 @@ test("verification-only Codex invocation uses schema and validates final output"
   assert.ok(observed.args.includes("--output-schema"));
   assert.match(observed.prompt, /verification only/i);
   assert.match(observed.prompt, /Do not edit source/);
+});
+
+function agentMessage(value) {
+  return { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(value) } };
+}
+
+test("reconciles progress followed by one matching terminal result", () => {
+  const final = passing();
+  const result = reconcileSemanticMessages({
+    events: [
+      agentMessage({ schemaVersion: 2, messageType: "progress", message: "Checking current manifest." }),
+      agentMessage(final),
+    ],
+    lastMessage: JSON.stringify(final),
+    manifest,
+    checkSummary,
+  });
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.progressDiagnostics, ["Checking current manifest."]);
+});
+
+test("progress-only historical shape reports a missing final result, not manifest coverage", async () => {
+  const fixturePath = new URL("./fixtures/issue-5-progress-only-derived.jsonl", import.meta.url);
+  const events = (await readFile(fixturePath, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.throws(
+    () => reconcileSemanticMessages({ events, lastMessage: "", manifest, checkSummary }),
+    (error) => error.code === "semantic_final_result_missing"
+      && Array.isArray(error.details.progress)
+      && error.details.progress.length === 2,
+  );
+});
+
+test("empty output reports missing final and malformed output stays distinct", () => {
+  assert.throws(
+    () => reconcileSemanticMessages({ events: [], lastMessage: "", manifest, checkSummary }),
+    (error) => error.code === "semantic_final_result_missing",
+  );
+  assert.throws(
+    () => reconcileSemanticMessages({ events: [], lastMessage: "{bad", manifest, checkSummary }),
+    (error) => error.code === "semantic_result_malformed",
+  );
+});
+
+test("rejects duplicate or conflicting terminal results", () => {
+  const final = passing();
+  assert.throws(
+    () => reconcileSemanticMessages({
+      events: [agentMessage(final), agentMessage(final)],
+      lastMessage: JSON.stringify(final),
+      manifest,
+      checkSummary,
+    }),
+    (error) => error.code === "semantic_final_result_duplicate",
+  );
+});
+
+test("coverage diagnostics name every missing current-manifest id deterministically", () => {
+  const final = passing();
+  final.results = [];
+  assert.throws(
+    () => validateStructuredVerification(final, manifest, checkSummary),
+    (error) => error.code === "semantic_result_coverage_invalid"
+      && error.message.includes("issue:1, requirement:1")
+      && error.details.missing.join(",") === "issue:1,requirement:1",
+  );
 });

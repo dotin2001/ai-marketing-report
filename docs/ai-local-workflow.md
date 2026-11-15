@@ -78,13 +78,30 @@ Every gate below must pass before the sole GitHub mutation is reachable:
 4. Fresh GitHub reads confirm the same Project/item/issue linkage and an exact `Todo` or idempotent `Done` status.
 5. The current issue resolves to explicit Acceptance Criteria or one non-empty natural-language request criterion; proposal, design, specs, and tasks are complete; every required task is checked.
 6. Required commands are discovered only from trusted repository instructions/configuration and approved OpenSpec tasks.
-7. Strict OpenSpec validation and every applicable required command pass. Failed, missing, skipped, blocked, or timed-out required checks stop synchronization.
+7. Strict OpenSpec validation and every applicable required command pass. Failed, missing, skipped, blocked, or timed-out required checks stop synchronization. Commands resolved to the `backend-test` profile run in a child environment with `APP_ENV=test`; the workflow's test-only dotenv signal prevents `backend/.env` from restoring values that a negative configuration test deliberately removes. The caller environment and dotenv file are never modified, and ordinary application startup keeps its normal dotenv behavior.
 8. Verification-only Codex structured output covers every criterion, requirement, scenario, and task with concrete evidence; Node reconciles it against actual command results.
 9. Identity, worktree, specification/instruction, issue/comment, and required-check fingerprints are unchanged after checks.
 10. Immediately before mutation, Git/GitHub identities, linkage, status, field/options, and every fingerprint are read and compared again.
 11. Exactly one `updateProjectV2ItemFieldValue` sets the selected item's `Status` to the freshly resolved `Done` option, followed by a confirming read.
 
 The issue remains open. A status other than exact `Todo` or `Done` is a conflict. An already-`Done` item exits successfully without a duplicate write.
+
+### Conditional PostgreSQL checks
+
+PostgreSQL settings are required only when the current invocation's resolved check plan contains a `postgresql` profile. A non-PostgreSQL issue does not need either database variable and performs no connectivity probe. For an applicable local database check, use an isolated database whose decoded name ends in `_test` and an explicitly approved local host:
+
+```sh
+APP_ENV=test \
+TEST_DATABASE_URL='postgresql+psycopg://<test-role>:<test-password>@localhost:5432/<isolated-name>_test' \
+MIGRATION_DATABASE_URL='postgresql+psycopg://<migration-role>:<migration-password>@localhost:5432/<isolated-name>_test' \
+npm run ai:local -- --sync-task --change <change-id>
+```
+
+The values must use supported PostgreSQL URL syntax, contain no literal or decoded whitespace, target an approved test host, and identify the same isolated test server and database. They must not equal `DATABASE_URL`; test and migration roles may differ. Keep real values in the environment only—configuration metadata and documentation must never contain credentials or complete URLs.
+
+Preflight failures are stable and secret-free: `postgres_permission_denied` means the local process or sandbox could not open the connection, `postgres_unreachable` means the service refused or timed out, `postgres_access_denied` means the server rejected the role or database, and `postgres_preflight_invalid` means the settings failed validation. Once preflight passes, a nonzero test process is an executed `test_assertion_failed`, not an infrastructure block.
+
+Semantic-verifier progress is diagnostic only. The verifier must emit exactly one versioned terminal result; completing after progress alone reports `semantic_final_result_missing`. Manifest coverage diagnostics list every omitted ID from the current invocation.
 
 ## Evidence, retry, and redaction
 

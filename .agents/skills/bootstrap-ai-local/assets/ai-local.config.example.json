@@ -10,11 +10,17 @@
   "packageManager": "npm",
   "verification": {
     "autoDiscover": true,
+    "approvedPostgresHosts": ["localhost", "127.0.0.1", "::1"],
+    "executionProfiles": {
+      "backend:check": "backend-test",
+      "database:check": "postgresql"
+    },
     "commands": [
       {
         "command": "npm",
         "args": ["test"],
-        "timeoutMs": 300000
+        "timeoutMs": 300000,
+        "executionProfile": "neutral"
       }
     ]
   },

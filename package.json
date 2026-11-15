@@ -18,7 +18,7 @@
     "backend:format:check": "uv --cache-dir backend/.uv-cache --directory backend run ruff format --check .",
     "backend:lint": "uv --cache-dir backend/.uv-cache --directory backend run ruff check .",
     "backend:typecheck": "uv --cache-dir backend/.uv-cache --directory backend run mypy app tests",
-    "backend:test": "uv --cache-dir backend/.uv-cache --directory backend run pytest",
+    "backend:test": "uv --cache-dir backend/.uv-cache --directory backend run pytest -m \"not postgres\"",
     "backend:import": "uv --cache-dir backend/.uv-cache --directory backend run python -c \"from app.main import create_app; assert callable(create_app)\"",
     "backend:check": "npm run backend:format:check && npm run backend:lint && npm run backend:typecheck && npm run backend:test && npm run backend:import",
     "database:test:unit": "uv --cache-dir backend/.uv-cache --directory backend run pytest -q tests/unit/db/test_metadata.py tests/unit/db/test_database_safety.py tests/unit/db/test_session.py tests/unit/db/test_snapshots.py",

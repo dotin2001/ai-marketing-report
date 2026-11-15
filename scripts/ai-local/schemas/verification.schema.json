@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ai-local-verification-v1",
+  "$id": "ai-local-verification-v2",
   "title": "AI Local Verification Result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "overallVerdict", "results"],
+  "required": ["schemaVersion", "messageType", "overallVerdict", "results"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
+    "messageType": { "const": "final" },
     "overallVerdict": { "enum": ["passed", "failed"] },
     "results": {
       "type": "array",

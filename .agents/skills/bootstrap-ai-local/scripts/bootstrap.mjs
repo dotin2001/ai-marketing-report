@@ -340,6 +340,8 @@ function configuration(settings) {
     packageManager: settings.packageManager,
     verification: {
       autoDiscover: settings.autoDiscover,
+      approvedPostgresHosts: ["localhost", "127.0.0.1", "::1"],
+      executionProfiles: {},
       commands: settings.verificationCommands.map(([command, ...args]) => ({
         command,
         args,

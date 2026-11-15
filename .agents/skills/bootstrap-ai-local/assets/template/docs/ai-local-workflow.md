@@ -12,7 +12,7 @@ gh auth refresh -h github.com -s repo,read:project,project
 gh auth status
 ```
 
-The configured repository is `{{REPOSITORY}}`, Project owner/number is `{{PROJECT_OWNER}}#{{PROJECT_NUMBER}}`, status field is `{{STATUS_FIELD}}`, and exact transition options are `{{TODO_OPTION}}` to `{{DONE_OPTION}}`. Required verification commands are explicit argv arrays under `verification.commands`; trusted package scripts and repository instructions are also discovered when `verification.autoDiscover` is true.
+The configured repository is `{{REPOSITORY}}`, Project owner/number is `{{PROJECT_OWNER}}#{{PROJECT_NUMBER}}`, status field is `{{STATUS_FIELD}}`, and exact transition options are `{{TODO_OPTION}}` to `{{DONE_OPTION}}`. Required verification commands are explicit argv arrays under `verification.commands`; trusted package scripts and repository instructions are also discovered when `verification.autoDiscover` is true. Each ambiguous command can receive a `neutral`, `backend-test`, or `postgresql` profile through trusted configuration.
 
 ## Preview and scaffold
 
@@ -83,7 +83,18 @@ The linked issue must contain a parseable section in this form:
 - Second observable outcome
 ```
 
-Without that heading and Markdown bullets, synchronization stops with `acceptance_criteria_missing`. A failed, missing, skipped, timed-out, or unavailable required check produces failed or blocked evidence and cannot move the item to `{{DONE_OPTION}}`. Missing semantic evidence or a failed Codex verification also fails closed.
+When the heading is absent, the complete non-empty issue body becomes one criterion; a malformed explicit section still fails closed. A failed, missing, skipped, timed-out, or unavailable required check produces failed or blocked evidence and cannot move the item to `{{DONE_OPTION}}`. Backend-test profiles run in a child environment with `APP_ENV=test` and a test-only dotenv-disable signal; the parent environment and dotenv files remain unchanged. Missing semantic evidence, progress without exactly one terminal result, or a failed Codex verification also fails closed.
+
+PostgreSQL variables are conditional: a non-PostgreSQL check plan needs neither variable and performs no probe. For a PostgreSQL profile, use secret environment values with approved local hosts and matching isolated `_test` targets:
+
+```sh
+APP_ENV=test \
+TEST_DATABASE_URL='postgresql+psycopg://<test-role>:<test-password>@localhost:5432/<isolated-name>_test' \
+MIGRATION_DATABASE_URL='postgresql+psycopg://<migration-role>:<migration-password>@localhost:5432/<isolated-name>_test' \
+{{RUN_COMMAND}} -- --sync-task --change <change-id>
+```
+
+Malformed or unsafe URLs report `postgres_preflight_invalid`; socket permission denial reports `postgres_permission_denied`; a refused or timed-out service reports `postgres_unreachable`; server rejection reports `postgres_access_denied`. A command that runs after a successful preflight but fails an assertion reports `test_assertion_failed`.
 
 ## Sync
 

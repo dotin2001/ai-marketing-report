@@ -103,4 +103,21 @@ test("identity, specification, issue, and check fingerprints change with each in
     fingerprintRequiredChecks(checks, { npm: "1" }),
     fingerprintRequiredChecks([{ ...checks[0], args: ["run", "test"] }], { npm: "1" }),
   );
+  const planned = [{
+    ...checks[0],
+    executionProfile: "backend-test",
+    capabilities: { backendTest: true, postgresql: false },
+    resolvedScripts: ["test", "backend:test"],
+    applicable: true,
+    applicabilityReason: "trusted",
+  }];
+  assert.equal(fingerprintRequiredChecks(planned), fingerprintRequiredChecks(structuredClone(planned)));
+  assert.notEqual(
+    fingerprintRequiredChecks(planned),
+    fingerprintRequiredChecks([{ ...planned[0], executionProfile: "postgresql" }]),
+  );
+  assert.notEqual(
+    fingerprintRequiredChecks(planned),
+    fingerprintRequiredChecks([{ ...planned[0], resolvedScripts: ["test", "database:test"] }]),
+  );
 });

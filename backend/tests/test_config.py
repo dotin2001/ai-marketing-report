@@ -9,7 +9,8 @@ from app.core.config import Settings
 
 
 def build(data: dict[str, Any]) -> Settings:
-    return Settings.model_validate(data)
+    # Dictionary-level tests own their complete input and must not consult a developer dotenv file.
+    return Settings(_env_file=None, **data)
 
 
 def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) -> None:
@@ -139,3 +140,50 @@ def test_non_local_https_object_storage_is_allowed(valid_settings_data: dict[str
     )
 
     assert configured.s3_use_ssl is True
+
+
+def _set_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    values: dict[str, Any],
+    *,
+    exclude: set[str] | None = None,
+) -> None:
+    for name, value in values.items():
+        if name in (exclude or set()):
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, str(value).lower() if isinstance(value, bool) else str(value))
+
+
+def test_workflow_test_signal_keeps_deliberately_unset_values_missing(
+    valid_settings_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("APP_HOST=dotenv-backfill.example\n", encoding="utf-8")
+    _set_environment(monkeypatch, valid_settings_data, exclude={"APP_HOST"})
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("AI_LOCAL_DISABLE_DOTENV", "1")
+
+    with pytest.raises(ValidationError) as error:
+        Settings()
+
+    assert "APP_HOST" in str(error.value)
+
+
+def test_normal_startup_and_non_test_signal_still_load_dotenv(
+    valid_settings_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("APP_HOST=dotenv-loaded.example\n", encoding="utf-8")
+    _set_environment(monkeypatch, valid_settings_data, exclude={"APP_HOST"})
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("AI_LOCAL_DISABLE_DOTENV", "1")
+
+    settings = Settings()
+
+    assert settings.app_env == "local"
+    assert settings.app_host == "dotenv-loaded.example"

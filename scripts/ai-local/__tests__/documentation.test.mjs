@@ -28,6 +28,13 @@ test("documented workflow commands match CLI help and referenced files exist", a
   assert.match(guide, /duplicate-link detection/);
   assert.match(guide, /\$openspec-apply-change <change-id>/);
   assert.match(guide, /issue remains open/i);
+  assert.match(guide, /APP_ENV=test/);
+  assert.match(guide, /TEST_DATABASE_URL='postgresql\+psycopg:\/\/<test-role>/);
+  assert.match(guide, /MIGRATION_DATABASE_URL='postgresql\+psycopg:\/\/<migration-role>/);
+  assert.match(guide, /non-PostgreSQL issue does not need either database variable/i);
+  assert.match(guide, /postgres_permission_denied/);
+  assert.match(guide, /postgres_unreachable/);
+  assert.match(guide, /test_assertion_failed/);
   assert.match(readme, /docs\/ai-local-workflow\.md/);
   assert.match(readme, /npm run ai:local -- --issue/);
   await Promise.all([

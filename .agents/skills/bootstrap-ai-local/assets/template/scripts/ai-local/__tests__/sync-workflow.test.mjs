@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { main } from "../cli.mjs";
 import { GitHubError, LockError, VerificationError } from "../errors.mjs";
+import { parseIssueAcceptanceCriteria } from "../verification.mjs";
 
 const changeId = "change-7";
 const traceability = {
@@ -51,7 +52,7 @@ const passedCheck = {
   required: true, state: "passed", exitCode: 0, durationMs: 1, stdout: "ok", stderr: "", reason: null,
 };
 const semantic = {
-  schemaVersion: 1, overallVerdict: "passed", passed: true,
+  schemaVersion: 2, messageType: "final", overallVerdict: "passed", passed: true,
   results: manifest.entries.map(({ id }) => ({
     id, verdict: "passed", evidence: ["verified"], commandEvidenceIds: ["strict"],
   })),
@@ -115,6 +116,48 @@ test("successful CLI journey changes only the selected Todo item to Done", async
   assert.equal(value.records.at(-1).synchronization.state, "succeeded");
   assert.match(value.output.value, /Issue remains open/);
   assert.equal(value.state.releases, 1);
+});
+
+test("natural-language request reaches semantic verification and an unmet fallback cannot mutate", async () => {
+  const naturalIssue = {
+    ...issue,
+    body: "Implement the customer request without requiring a Markdown acceptance section.",
+  };
+  let verifiedManifest;
+  const value = harness({
+    fetchIssueContext: async () => structuredClone(naturalIssue),
+    buildVerificationManifest: async ({ issue: currentIssue }) => {
+      const criteria = parseIssueAcceptanceCriteria(currentIssue);
+      return {
+        ...manifest,
+        criteria,
+        entries: [...criteria, ...manifest.tasks],
+      };
+    },
+    runCodexVerification: async ({ manifest: currentManifest }) => {
+      verifiedManifest = currentManifest;
+      return {
+        schemaVersion: 2,
+        messageType: "final",
+        overallVerdict: "failed",
+        passed: false,
+        results: currentManifest.entries.map(({ id }, index) => ({
+          id,
+          verdict: index === 0 ? "failed" : "passed",
+          evidence: [index === 0 ? "request is not implemented" : "verified"],
+          commandEvidenceIds: ["strict"],
+        })),
+      };
+    },
+  });
+
+  const result = await main(["--sync-task", "--change", changeId], value.dependencies);
+  assert.equal(result.code, "verification_failed");
+  assert.deepEqual(
+    verifiedManifest.criteria.map(({ id, text }) => ({ id, text })),
+    [{ id: "issue:request", text: naturalIssue.body }],
+  );
+  assert.equal(value.state.mutations, 0);
 });
 
 for (const scenario of [

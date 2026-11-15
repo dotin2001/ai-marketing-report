@@ -7,5 +7,12 @@
     "todoOption": "Todo",
     "doneOption": "Done"
   },
-  "runtimeDirectory": ".ai-local"
+  "runtimeDirectory": ".ai-local",
+  "verification": {
+    "executionProfiles": {
+      "backend:check": "backend-test",
+      "database:check": "postgresql"
+    },
+    "approvedPostgresHosts": ["localhost", "127.0.0.1", "::1"]
+  }
 }

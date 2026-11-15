@@ -16,11 +16,6 @@ const valid = {
     todoOption: "Todo",
     doneOption: "Done",
   },
-  packageManager: "pnpm",
-  verification: {
-    autoDiscover: false,
-    commands: [{ command: "pnpm", args: ["test"], timeoutMs: 120000 }],
-  },
   runtimeDirectory: ".runtime",
 };
 
@@ -36,8 +31,6 @@ test("loads a valid alternate AI_LOCAL_CONFIG", async () => {
 
   assert.equal(config.github.repository, "example-owner/example-repo");
   assert.equal(config.github.projectNumber, 7);
-  assert.equal(config.packageManager, "pnpm");
-  assert.deepEqual(config.verification.commands[0].args, ["test"]);
   assert.equal(config.runtimePath, path.join(root, ".runtime"));
 });
 
@@ -49,9 +42,6 @@ for (const [name, mutate] of [
   ["git runtime path", (copy) => (copy.runtimeDirectory = ".git/ai-local")],
   ["malformed repository", (copy) => (copy.github.repository = "not-a-repository")],
   ["repository path traversal", (copy) => (copy.github.repository = "owner/../repo")],
-  ["unsupported package manager", (copy) => (copy.packageManager = "unknown")],
-  ["shell verification command", (copy) => (copy.verification.commands[0].command = "sh")],
-  ["verification control character", (copy) => (copy.verification.commands[0].args = ["bad\narg"])],
 ]) {
   test(`rejects ${name}`, () => {
     const copy = structuredClone(valid);
@@ -71,3 +61,41 @@ test("rejects malformed JSON", async () => {
     ConfigurationError,
   );
 });
+
+test("accepts neutral, backend-test, and PostgreSQL execution profiles", () => {
+  const config = validateConfiguration({
+    ...valid,
+    verification: {
+      executionProfiles: {
+        test: "neutral",
+        "backend:check": "backend-test",
+        "npm run database:check": "postgresql",
+      },
+      approvedPostgresHosts: ["localhost", "127.0.0.1"],
+    },
+  }, "/repo");
+
+  assert.deepEqual(config.verification.executionProfiles, {
+    "npm run test": "neutral",
+    "npm run backend:check": "backend-test",
+    "npm run database:check": "postgresql",
+  });
+});
+
+for (const [name, verification] of [
+  ["non-object verification", []],
+  ["non-object profiles", { executionProfiles: [] }],
+  ["unknown profile", { executionProfiles: { test: "production" } }],
+  ["credential-bearing selector", { executionProfiles: { "DATABASE_URL=postgresql://user:password@localhost/db_test npm test": "neutral" } }],
+  ["conflicting normalized selectors", { executionProfiles: { test: "neutral", "npm run test": "backend-test" } }],
+  ["empty approved hosts", { approvedPostgresHosts: [] }],
+  ["credential-bearing host", { approvedPostgresHosts: ["user:password@localhost"] }],
+  ["unknown verification field", { unsupported: true }],
+]) {
+  test(`rejects ${name}`, () => {
+    assert.throws(
+      () => validateConfiguration({ ...valid, verification }, "/repo"),
+      ConfigurationError,
+    );
+  });
+}

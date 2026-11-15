@@ -130,7 +130,7 @@ npm run infra:validate
 npm run frontend:check
 ```
 
-`npm run backend:check` includes the PostgreSQL integration suite and therefore requires the isolated test configuration above and a running local PostgreSQL service. It still requires no Redis, object-storage, OpenAI, or PDF service.
+`npm run backend:check` runs formatting, linting, type checks, configuration tests, and all tests not marked `postgres`. It needs no PostgreSQL, Redis, object-storage, OpenAI, or PDF service. Run `npm run database:check` separately with the approved isolated PostgreSQL test configuration above.
 
 The stack check starts and stops the fixed `mkt-rp-assistant` Compose project, verifies the private bucket and persistence over two start cycles, and preserves named volumes:
 

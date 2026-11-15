@@ -52,7 +52,7 @@ const passedCheck = {
   required: true, state: "passed", exitCode: 0, durationMs: 1, stdout: "ok", stderr: "", reason: null,
 };
 const semantic = {
-  schemaVersion: 1, overallVerdict: "passed", passed: true,
+  schemaVersion: 2, messageType: "final", overallVerdict: "passed", passed: true,
   results: manifest.entries.map(({ id }) => ({
     id, verdict: "passed", evidence: ["verified"], commandEvidenceIds: ["strict"],
   })),
@@ -137,7 +137,8 @@ test("natural-language request reaches semantic verification and an unmet fallba
     runCodexVerification: async ({ manifest: currentManifest }) => {
       verifiedManifest = currentManifest;
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
+        messageType: "final",
         overallVerdict: "failed",
         passed: false,
         results: currentManifest.entries.map(({ id }, index) => ({

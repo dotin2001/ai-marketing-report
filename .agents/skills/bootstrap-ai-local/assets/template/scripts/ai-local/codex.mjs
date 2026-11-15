@@ -11,6 +11,70 @@ import {
 } from "./runtime.mjs";
 import { validateStructuredVerification } from "./verification.mjs";
 
+function boundedProgress(value) {
+  return redact(String(value ?? "")).slice(0, 1024);
+}
+
+function parseAgentMessage(event) {
+  if (event?.type !== "item.completed" || event?.item?.type !== "agent_message") return null;
+  try {
+    return JSON.parse(event.item.text);
+  } catch {
+    return null;
+  }
+}
+
+export function reconcileSemanticMessages({ events, lastMessage, manifest, checkSummary }) {
+  const progressDiagnostics = [];
+  const eventFinals = [];
+  for (const event of events) {
+    const message = parseAgentMessage(event);
+    if (!message) continue;
+    if (message.schemaVersion === 2 && message.messageType === "final") {
+      eventFinals.push(message);
+    } else if (message.schemaVersion === 2 && message.messageType === "progress") {
+      progressDiagnostics.push(boundedProgress(message.message));
+    } else {
+      // Legacy schema-shaped assistant updates are diagnostics, never terminal results.
+      progressDiagnostics.push(boundedProgress(message.message ?? message.results?.[0]?.rationale ?? "Legacy verifier progress message."));
+    }
+  }
+
+  let artifactMessage = null;
+  if (String(lastMessage ?? "").trim()) {
+    try {
+      artifactMessage = JSON.parse(lastMessage);
+    } catch {
+      throw new CodexError("semantic_result_malformed", "Semantic verifier output is malformed.");
+    }
+    if (artifactMessage?.schemaVersion !== 2 || artifactMessage?.messageType !== "final") {
+      if (artifactMessage?.messageType === "progress" || artifactMessage?.schemaVersion === 1) {
+        progressDiagnostics.push(boundedProgress(artifactMessage.message ?? artifactMessage.results?.[0]?.rationale));
+        artifactMessage = null;
+      } else {
+        throw new CodexError("semantic_result_malformed", "Semantic verifier output is not a supported terminal result.");
+      }
+    }
+  }
+
+  if (eventFinals.length > 1) {
+    throw new CodexError("semantic_final_result_duplicate", "Semantic verifier emitted more than one terminal result.");
+  }
+  if (artifactMessage && eventFinals.length === 1) {
+    if (JSON.stringify(artifactMessage) !== JSON.stringify(eventFinals[0])) {
+      throw new CodexError("semantic_final_result_duplicate", "Semantic verifier emitted conflicting terminal results.");
+    }
+  }
+  const terminal = artifactMessage ?? eventFinals[0];
+  if (!terminal) {
+    throw new CodexError("semantic_final_result_missing", "Semantic verifier completed without a terminal result.", {
+      progress: progressDiagnostics.filter(Boolean).slice(-8),
+    });
+  }
+  const validated = validateStructuredVerification(terminal, manifest, checkSummary);
+  return Object.freeze({ ...validated, progressDiagnostics: Object.freeze(progressDiagnostics.filter(Boolean).slice(-8)) });
+}
+
 export async function runCodexPlanning({
   repositoryRoot,
   runtimePaths,
@@ -117,7 +181,8 @@ export async function runCodexVerification({
   const prompt = `Perform verification only. Inspect the current repository and the trusted verification input at:
 ${input.filePath}
 
-Return one structured result for every manifest entry using the supplied JSON schema. Cite concrete file,
+Progress updates, if any, must use {"schemaVersion":2,"messageType":"progress","message":"..."}.
+Return exactly one terminal structured result for every manifest entry using the supplied JSON schema. Cite concrete file,
 behavior, or actual command-result evidence. Do not invent command results. Do not edit source, tasks,
 specifications, runtime links, or GitHub state; do not clean, commit, push, merge, deploy, or switch branches.`;
   const args = [
@@ -142,6 +207,7 @@ specifications, runtime links, or GitHub state; do not clean, commit, push, merg
       timeoutMs,
       maxOutputBytes: 4 * 1024 * 1024,
     });
+    const events = [];
     for (const line of String(processResult.stdout).split("\n").filter(Boolean)) {
       let event;
       try {
@@ -149,6 +215,7 @@ specifications, runtime links, or GitHub state; do not clean, commit, push, merg
       } catch {
         event = { type: "unparsed_codex_output", output: redact(line).slice(0, 4096) };
       }
+      events.push(event);
       await appendRedactedEvent(eventLogPath, event);
     }
     if (processResult.timedOut || processResult.exitCode !== 0) {
@@ -158,13 +225,8 @@ specifications, runtime links, or GitHub state; do not clean, commit, push, merg
         { eventLogPath, stderr: redact(processResult.stderr).slice(0, 4096) },
       );
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(await readFile(output.filePath, "utf8"));
-    } catch {
-      throw new CodexError("codex_verification_malformed", "Codex returned malformed structured verification output.");
-    }
-    return validateStructuredVerification(parsed, manifest, checkSummary);
+    const lastMessage = await readFile(output.filePath, "utf8");
+    return reconcileSemanticMessages({ events, lastMessage, manifest, checkSummary });
   } finally {
     await cleanupOwnedTemp(input);
     await cleanupOwnedTemp(output);

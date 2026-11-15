@@ -12,6 +12,7 @@ import { fetchIssueContext } from "./issue.mjs";
 import { acquireRepositoryLock } from "./lock.mjs";
 import { createPolicyTransport } from "./policy.mjs";
 import { runPreflight } from "./preflight.mjs";
+import { runPostgresPreflight } from "./postgres-preflight.mjs";
 import { runProcess } from "./process.mjs";
 import { resolveProject } from "./project.mjs";
 import { findReusableEvidence } from "./retry.mjs";
@@ -83,7 +84,7 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
       repositoryRoot,
       changeId: candidate.changeId,
       manifest,
-      config,
+      configuration: config,
     });
     const fingerprintArgs = {
       repositoryRoot,
@@ -116,6 +117,14 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
       checkSummary = await (dependencies.executeRequiredChecks ?? executeRequiredChecks)(checks, {
         repositoryRoot,
         runCommand,
+        environment: dependencies.environment ?? process.env,
+        preflightPostgres: dependencies.preflightPostgres ?? ((preflightOptions) => runPostgresPreflight({
+          ...preflightOptions,
+          approvedHosts: config.verification.approvedPostgresHosts,
+          repositoryRoot,
+          runCommand,
+          probeDatabase: dependencies.probeDatabase,
+        })),
       });
       if (!checkSummary.passed) {
         const record = createEvidenceRecord({
@@ -142,20 +151,39 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
         evidenceWritten = true;
         throw new VerificationError("fingerprint_changed", "A required check changed verification inputs.");
       }
-      semantic = await (dependencies.runCodexVerification ?? runCodexVerification)({
-        repositoryRoot,
-        runtimePaths,
-        manifest,
-        checkSummary,
-        runCommand,
-        environment: dependencies.environment,
-      });
-      verification = (dependencies.reconcileVerification ?? reconcileVerification)({
-        manifest,
-        requiredChecks: checks,
-        checkSummary,
-        semanticResult: semantic,
-      });
+      try {
+        semantic = await (dependencies.runCodexVerification ?? runCodexVerification)({
+          repositoryRoot,
+          runtimePaths,
+          manifest,
+          checkSummary,
+          runCommand,
+          environment: dependencies.environment,
+        });
+        verification = (dependencies.reconcileVerification ?? reconcileVerification)({
+          manifest,
+          requiredChecks: checks,
+          checkSummary,
+          semanticResult: semantic,
+        });
+      } catch (error) {
+        const record = createEvidenceRecord({
+          attemptId,
+          changeId: candidate.changeId,
+          ...evidenceInputs({
+            traceability,
+            semantic,
+            checkSummary,
+            fingerprints: verifiedFingerprints,
+            toolVersions: preflight.toolVersions,
+          }),
+          verificationState: "failed",
+          synchronization: { state: "not_attempted", errorCode: error.code ?? "semantic_verification_failed" },
+        });
+        await (dependencies.persistEvidence ?? persistEvidence)(runtimePaths, record);
+        evidenceWritten = true;
+        throw error;
+      }
     }
 
     passing = { traceability, semantic, checkSummary, fingerprints: verifiedFingerprints, toolVersions: preflight.toolVersions };

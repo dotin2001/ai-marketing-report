@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+import os
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -35,6 +36,12 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
         validate_default=True,
     )
+
+    def __init__(self, **values: Any) -> None:
+        # The workflow signal is deliberately inert outside its test child process.
+        if os.environ.get("APP_ENV") == "test" and os.environ.get("AI_LOCAL_DISABLE_DOTENV") == "1":
+            values.setdefault("_env_file", None)
+        super().__init__(**values)
 
     app_env: Literal["local", "test", "development", "staging", "production"] = Field(
         validation_alias="APP_ENV"
