@@ -36,12 +36,32 @@ test("loads a valid alternate AI_LOCAL_CONFIG", async () => {
   assert.equal(config.runtimePath, path.join(root, ".runtime"));
 });
 
-test("installed configuration declares a distinct In Progress option", async () => {
+test("committed configuration declares the exact In Progress option", async () => {
   const configPath = path.resolve(import.meta.dirname, "../../../ai-local.config.json");
   const config = await loadConfiguration({ repositoryRoot: path.dirname(configPath), environment: { AI_LOCAL_CONFIG: configPath } });
-  assert.ok(config.github.inProgressOption);
-  assert.notEqual(config.github.inProgressOption, config.github.todoOption);
-  assert.notEqual(config.github.inProgressOption, config.github.doneOption);
+  assert.equal(config.github.inProgressOption, "{{IN_PROGRESS_OPTION}}");
+  assert.deepEqual(config.verification.syncTask.requiredCommands, [
+    "git diff --check", "npm run frontend:test", "npm run backend:test",
+  ]);
+});
+
+test("validates the shared sync policy and forbids unsafe git verification", () => {
+  const syncTask = {
+    requiredCommands: ["git diff --check", "npm run frontend:test", "npm run backend:test"],
+    semanticReview: "optional",
+  };
+  assert.equal(validateConfiguration({ ...valid, verification: { syncTask } }, "/repo").verification.syncTask.id, "basic-local-v1");
+  for (const invalid of [
+    {},
+    { ...syncTask, requiredCommands: ["git diff --check"] },
+    { ...syncTask, requiredCommands: ["git reset --hard", "npm run frontend:test", "npm run backend:test"] },
+    { ...syncTask, semanticReview: "required" },
+  ]) {
+    assert.throws(() => validateConfiguration({ ...valid, verification: { syncTask: invalid } }, "/repo"), ConfigurationError);
+  }
+  assert.throws(() => validateConfiguration({
+    ...valid, verification: { commands: [{ command: "git", args: ["reset", "--hard"] }] },
+  }, "/repo"), ConfigurationError);
 });
 
 for (const [name, mutate] of [

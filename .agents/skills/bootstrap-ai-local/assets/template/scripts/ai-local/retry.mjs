@@ -7,15 +7,16 @@ function identitiesEqual(left, right) {
   return canonicalSha256(left) === canonicalSha256(right);
 }
 
-function reusable(record, identities, fingerprints) {
+function reusable(record, identities, fingerprints, policyId) {
   return record?.schemaVersion === EVIDENCE_SCHEMA_VERSION
+    && (record.verification?.policyId ?? null) === (policyId ?? null)
     && record.verification?.state === "passed"
     && record.synchronization?.state === "failed"
     && identitiesEqual(record.identities, identities)
     && fingerprintsEqual(record.fingerprints, fingerprints);
 }
 
-export async function findReusableEvidence({ runtimePaths, changeId, identities, fingerprints }) {
+export async function findReusableEvidence({ runtimePaths, changeId, identities, fingerprints, policyId = null }) {
   const paths = (await listEvidence(runtimePaths, changeId)).reverse();
   for (const evidencePath of paths) {
     let record;
@@ -24,7 +25,7 @@ export async function findReusableEvidence({ runtimePaths, changeId, identities,
     } catch {
       continue;
     }
-    if (reusable(record, identities, fingerprints)) {
+    if (reusable(record, identities, fingerprints, policyId)) {
       return Object.freeze({ kind: "reuse", evidencePath, record: Object.freeze(record) });
     }
   }

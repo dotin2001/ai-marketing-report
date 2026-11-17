@@ -206,6 +206,7 @@ export async function buildVerificationManifest({ repositoryRoot, changeId, issu
 }
 
 const ALLOWED_CHECK_EXECUTABLES = new Set([
+  "git",
   "npm",
   "pnpm",
   "yarn",
@@ -237,6 +238,7 @@ function simpleCommand(value) {
   );
   if (!args?.length || !ALLOWED_CHECK_EXECUTABLES.has(args[0])) return null;
   if (args[0] === "npm" && args[1] === "run" && args[2] === "ai:local") return null;
+  if (args[0] === "git" && (args.length !== 3 || args[1] !== "diff" || args[2] !== "--check")) return null;
   if (args.some((part) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(part))) return null;
   return args;
 }
@@ -272,7 +274,9 @@ export async function discoverVerificationChecks({ repositoryRoot, changeId, man
   }
 
   if (configuration.verification?.autoDiscover === false) {
-    return finalizeChecks(checks, {}, configuration);
+    const discovered = finalizeChecks(checks, {}, configuration);
+    if (!configuration.verification?.syncTask) return discovered;
+    return buildSyncTaskCheckPlan({ discovered, packageScripts: {}, configuration, repositoryRoot, changeId });
   }
 
   const packagePath = path.join(repositoryRoot, "package.json");
@@ -340,7 +344,45 @@ export async function discoverVerificationChecks({ repositoryRoot, changeId, man
     if (error.code !== "ENOENT") throw error;
   }
 
-  return finalizeChecks(checks, packageScripts, configuration);
+  const discovered = finalizeChecks(checks, packageScripts, configuration);
+  if (!configuration.verification?.syncTask) return discovered;
+  return buildSyncTaskCheckPlan({ discovered, packageScripts, configuration, repositoryRoot, changeId });
+}
+
+function buildSyncTaskCheckPlan({ discovered, packageScripts, configuration, repositoryRoot, changeId }) {
+  const policy = configuration.verification.syncTask;
+  const taskPath = path.join(repositoryRoot, "openspec", "changes", changeId, "tasks.md");
+  const selected = discovered.filter((check) => check.source === taskPath);
+  const evidence = selected.length ? selected : discovered;
+  const describes = (check, pattern) => pattern.test([
+    check.command, ...(check.args ?? []), ...(check.resolvedScripts ?? []),
+  ].join(" "));
+  const frontendApplies = evidence.some((check) => describes(check, /(?:frontend:|--prefix\s+frontend\b)/i));
+  const backendApplies = evidence.some((check) => describes(check, /(?:backend:|database:|storage:|--directory\s+backend\b|\bpytest\b)/i));
+  const strict = discovered.find((check) => check.command === "openspec" && check.args[0] === "validate"
+    && check.args[1] === changeId && check.args.includes("--strict") && check.args.includes("--json"));
+  if (!strict) throw new VerificationError("strict_validation_missing", "Strict OpenSpec validation is missing from the check plan.");
+  const basic = [
+    { command: "git", args: ["diff", "--check"], required: true, applicable: true,
+      source: `${configuration.configPath ?? "ai-local.config.json"}#verification.syncTask`,
+      rationale: "Shared basic completion policy requires a clean Git diff." },
+    { command: configuration.packageManager ?? "npm", args: ["run", "frontend:test"], required: frontendApplies,
+      applicable: frontendApplies, applicabilityReason: frontendApplies ? "Frontend suite selected by trusted change checks." : "Frontend suite does not apply to this change.",
+      source: `${configuration.configPath ?? "ai-local.config.json"}#verification.syncTask`,
+      rationale: "Shared basic completion policy frontend unit tests." },
+    { command: configuration.packageManager ?? "npm", args: ["run", "backend:test"], required: backendApplies,
+      applicable: backendApplies, applicabilityReason: backendApplies ? "Backend suite selected by trusted change checks." : "Backend suite does not apply to this change.",
+      source: `${configuration.configPath ?? "ai-local.config.json"}#verification.syncTask`,
+      rationale: "Shared basic completion policy backend unit tests." },
+  ];
+  const normalized = normalizeCheckPlan(basic.map((check, index) => ({
+    id: `check:basic:${index + 1}`, timeoutMs: 5 * 60_000, ...check,
+  })), { packageScripts, configuration });
+  const optional = discovered.filter((check) => check.id !== strict.id).map((check) => Object.freeze({
+    ...check, required: false, applicable: false,
+    applicabilityReason: "Optional for Done; run separately for expanded verification.",
+  }));
+  return Object.freeze([strict, ...normalized, ...optional]);
 }
 
 function finalizeChecks(checks, packageScripts, configuration) {
@@ -595,4 +637,34 @@ export function reconcileVerification({ manifest, requiredChecks, checkSummary, 
     checkSummary,
     semantic,
   });
+}
+
+export function reconcileBasicVerification({ manifest, checks, checkSummary, policy }) {
+  if (policy?.id !== "basic-local-v1") {
+    throw new VerificationError("verification_policy_invalid", "A supported basic completion policy is required.");
+  }
+  if (manifest.tasks.some((task) => task.complete !== true)) {
+    throw new VerificationError("incomplete_tasks", "One or more required OpenSpec tasks are incomplete.");
+  }
+  const actualById = new Map(checkSummary.results.map((result) => [result.checkId, result]));
+  const required = checks.filter((check) => check.required && check.applicable !== false);
+  const mandatory = [
+    (check) => check.command === "openspec" && check.args[0] === "validate" && check.args.includes("--strict") && check.args.includes("--json"),
+    (check) => check.command === "git" && check.args.join(" ") === "diff --check",
+  ];
+  if (mandatory.some((matches) => !required.some(matches))) {
+    throw new VerificationError("verification_check_missing", "Strict OpenSpec validation and git diff --check must be required.");
+  }
+  for (const check of required) {
+    const actual = actualById.get(check.id);
+    if (actual?.state !== "passed") {
+      const command = [check.command, ...check.args].join(" ");
+      throw new VerificationError(
+        actual ? "verification_failed" : "verification_check_missing",
+        `Required check ${command} ${actual ? `is ${actual.state}` : "is missing"}; Project status was not updated.`,
+        { checkId: check.id, state: actual?.state ?? "missing" },
+      );
+    }
+  }
+  return Object.freeze({ kind: "VerifiedSynchronization", policyId: policy.id, checks: required, checkSummary });
 }

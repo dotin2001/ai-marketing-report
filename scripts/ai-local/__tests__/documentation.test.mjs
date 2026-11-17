@@ -33,7 +33,10 @@ test("documented workflow commands match CLI help and referenced files exist", a
   assert.match(guide, /APP_ENV=test/);
   assert.match(guide, /TEST_DATABASE_URL='postgresql\+psycopg:\/\/<test-role>/);
   assert.match(guide, /MIGRATION_DATABASE_URL='postgresql\+psycopg:\/\/<migration-role>/);
-  assert.match(guide, /non-PostgreSQL issue does not need either database variable/i);
+  assert.match(guide, /service-free backend suite does not need either database variable/i);
+  assert.match(guide, /git diff --check/);
+  assert.match(guide, /npm run backend:test/);
+  assert.match(guide, /npm run frontend:test/);
   assert.match(guide, /postgres_permission_denied/);
   assert.match(guide, /postgres_unreachable/);
   assert.match(guide, /test_assertion_failed/);

@@ -1,6 +1,6 @@
 # Local AI Planning and Project Synchronization
 
-This repository provides a local, fail-closed workflow for turning a GitHub Projects v2 `Todo` issue into a reviewed OpenSpec change. URL-targeted planning first moves the selected item to `In Progress`. Only after implementation is independently verified can synchronization change that item to `Done`.
+This repository provides a local workflow for turning a GitHub Projects v2 `Todo` issue into a reviewed OpenSpec change. URL-targeted planning first moves the selected item to `In Progress`. After the shared basic local checks pass, synchronization can change that item to `Done`.
 
 ## Prerequisites and authentication
 
@@ -66,7 +66,7 @@ Or select one exact link:
 npm run ai:local -- --sync-task --change <change-id>
 ```
 
-The current issue body must contain a customer request. A Markdown Acceptance Criteria section with bullet or checkbox items is recommended for complex work because each item is verified separately, but it is not required. When no Acceptance Criteria heading exists, the workflow treats the complete trimmed issue body as one issue-level verification criterion. Acceptance Criteria headings may use zero to three leading spaces, matching CommonMark ATX heading indentation.
+The current issue body must contain a customer request. A Markdown Acceptance Criteria section with bullet or checkbox items is recommended for complex work because optional semantic review can report each item separately, but it is not required for the basic `Done` gate. When no Acceptance Criteria heading exists, the workflow treats the complete trimmed issue body as one issue-level review criterion. Acceptance Criteria headings may use zero to three leading spaces, matching CommonMark ATX heading indentation.
 
 An empty or whitespace-only issue body stops with `issue_request_missing`. If an Acceptance Criteria heading is present but its section contains no Markdown bullet or checkbox items, synchronization stops with `acceptance_criteria_malformed` instead of weakening the explicit contract into a whole-body fallback. Issue text remains untrusted data in either form and never supplies verification commands.
 
@@ -77,10 +77,10 @@ Every gate below must pass before the sole GitHub mutation is reachable:
 3. Proposal marker and local link record agree on repository, Project, item, issue, branch, base commit, and change.
 4. Fresh GitHub reads confirm the same Project/item/issue linkage and an exact `Todo`, `In Progress`, or idempotent `Done` status.
 5. The current issue resolves to explicit Acceptance Criteria or one non-empty natural-language request criterion; proposal, design, specs, and tasks are complete; every required task is checked.
-6. Required commands are discovered only from trusted repository instructions/configuration and approved OpenSpec tasks.
-7. Strict OpenSpec validation and every applicable required command pass. Failed, missing, skipped, blocked, or timed-out required checks stop synchronization. Commands resolved to the `backend-test` profile run in a child environment with `APP_ENV=test`; the workflow's test-only dotenv signal prevents `backend/.env` from restoring values that a negative configuration test deliberately removes. The caller environment and dotenv file are never modified, and ordinary application startup keeps its normal dotenv behavior.
-8. Verification-only Codex structured output covers every criterion, requirement, scenario, and task with concrete evidence; Node reconciles it against actual command results.
-9. Identity, worktree, specification/instruction, issue/comment, and required-check fingerprints are unchanged after checks.
+6. Commands are discovered only from trusted repository instructions/configuration and approved OpenSpec tasks. The shared `verification.syncTask` policy applies to every issue.
+7. The `Done` gate requires `openspec validate <change-id> --strict --json`, `git diff --check`, and `npm run frontend:test` and/or `npm run backend:test` when the selected change calls for those suites. Failed, missing, skipped, blocked, or timed-out required checks stop synchronization and name the blocker. The service-free `backend:test` script excludes `postgres` and `storage_live` markers; it runs with `APP_ENV=test` and `AI_LOCAL_DISABLE_DOTENV=1` without PostgreSQL, object storage, `TEST_DATABASE_URL`, or `MIGRATION_DATABASE_URL`.
+8. Live PostgreSQL, migration, and object-storage checks are optional for `Done` and are reported as skipped unless run separately. AI semantic review is optional; set `AI_LOCAL_RUN_OPTIONAL_SEMANTIC=1` to include its result in a synchronization attempt. Its failure is reported but does not block a passing basic gate.
+9. Identity, worktree, specification/instruction, issue/comment, policy, and required-check fingerprints are unchanged after checks.
 10. Immediately before mutation, Git/GitHub identities, linkage, status, field/options, and every fingerprint are read and compared again.
 11. Exactly one `updateProjectV2ItemFieldValue` sets the selected item's `Status` from `Todo` or `In Progress` to the freshly resolved `Done` option, followed by a confirming read.
 
@@ -88,20 +88,20 @@ The issue remains open. A status other than exact `Todo`, `In Progress`, or `Don
 
 ### Conditional PostgreSQL checks
 
-PostgreSQL settings are required only when the current invocation's resolved check plan contains a `postgresql` profile. A non-PostgreSQL issue does not need either database variable and performs no connectivity probe. For an applicable local database check, use an isolated database whose decoded name ends in `_test` and an explicitly approved local host:
+PostgreSQL settings are required only when separately running a check with a positive `postgresql` profile. `--sync-task` with the service-free backend suite does not need either database variable or perform a connectivity probe. For a separate local database check, use an isolated database whose decoded name ends in `_test` and an explicitly approved local host:
 
 ```sh
 APP_ENV=test \
 TEST_DATABASE_URL='postgresql+psycopg://<test-role>:<test-password>@localhost:5432/<isolated-name>_test' \
 MIGRATION_DATABASE_URL='postgresql+psycopg://<migration-role>:<migration-password>@localhost:5432/<isolated-name>_test' \
-npm run ai:local -- --sync-task --change <change-id>
+npm run database:check
 ```
 
 The values must use supported PostgreSQL URL syntax, contain no literal or decoded whitespace, target an approved test host, and identify the same isolated test server and database. They must not equal `DATABASE_URL`; test and migration roles may differ. Keep real values in the environment only—configuration metadata and documentation must never contain credentials or complete URLs.
 
 Preflight failures are stable and secret-free: `postgres_permission_denied` means the local process or sandbox could not open the connection, `postgres_unreachable` means the service refused or timed out, `postgres_access_denied` means the server rejected the role or database, and `postgres_preflight_invalid` means the settings failed validation. Once preflight passes, a nonzero test process is an executed `test_assertion_failed`, not an infrastructure block.
 
-Semantic-verifier progress is diagnostic only. The verifier must emit exactly one versioned terminal result; completing after progress alone reports `semantic_final_result_missing`. Manifest coverage diagnostics list every omitted ID from the current invocation.
+Run `npm run storage:test:live` only with the documented live storage test configuration. Semantic-verifier progress is diagnostic only when optional review is requested. The verifier must emit exactly one versioned terminal result; completing after progress alone reports `semantic_final_result_missing`. Manifest coverage diagnostics list every omitted ID from the current invocation. These optional failures do not block `Done`.
 
 ## Evidence, retry, and redaction
 

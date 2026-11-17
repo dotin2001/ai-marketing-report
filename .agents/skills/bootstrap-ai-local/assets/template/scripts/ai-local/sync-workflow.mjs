@@ -27,11 +27,14 @@ import {
   buildVerificationManifest,
   discoverVerificationChecks,
   executeRequiredChecks,
+  reconcileBasicVerification,
   reconcileVerification,
 } from "./verification.mjs";
 
-function evidenceInputs({ traceability, semantic, checkSummary, fingerprints, toolVersions }) {
+function evidenceInputs({ traceability, semantic, checkSummary, fingerprints, toolVersions, policyId, semanticState }) {
   return {
+    policyId: policyId ?? null,
+    semanticState: semanticState ?? null,
     identities: traceability,
     criterionResults: semantic?.results ?? [],
     commandResults: checkSummary?.results ?? [],
@@ -86,6 +89,7 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
       manifest,
       configuration: config,
     });
+    const syncPolicy = config.verification?.syncTask ?? null;
     const fingerprintArgs = {
       repositoryRoot,
       identity: traceability,
@@ -93,6 +97,7 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
       instructionPaths: dependencies.instructionPaths ?? [],
       issue,
       checks,
+      policyId: syncPolicy?.id ?? null,
       toolVersions: preflight.toolVersions,
       runCommand,
     };
@@ -102,16 +107,21 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
       changeId: candidate.changeId,
       identities: traceability,
       fingerprints: initialFingerprints,
+      policyId: syncPolicy?.id ?? null,
     });
 
     let verification;
     let semantic;
+    let semanticState = syncPolicy ? "skipped" : "required";
     let checkSummary;
     let verifiedFingerprints = initialFingerprints;
     if (retry.kind === "reuse") {
-      semantic = { results: retry.record.verification.criteria, passed: true };
+      semantic = syncPolicy ? null : { results: retry.record.verification.criteria, passed: true };
+      if (syncPolicy) semanticState = retry.record.verification.semanticState ?? "skipped";
       checkSummary = { results: retry.record.verification.commands, passed: true };
-      verification = Object.freeze({ kind: "VerifiedSynchronization", reused: true });
+      verification = syncPolicy
+        ? (dependencies.reconcileBasicVerification ?? reconcileBasicVerification)({ manifest, checks, checkSummary, policy: syncPolicy })
+        : Object.freeze({ kind: "VerifiedSynchronization", reused: true });
       output.write(`Reusing passing verification evidence ${retry.record.attemptId}.\n`);
     } else {
       checkSummary = await (dependencies.executeRequiredChecks ?? executeRequiredChecks)(checks, {
@@ -130,20 +140,24 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
         const record = createEvidenceRecord({
           attemptId,
           changeId: candidate.changeId,
-          ...evidenceInputs({ traceability, checkSummary, fingerprints: initialFingerprints, toolVersions: preflight.toolVersions }),
+          ...evidenceInputs({ traceability, checkSummary, fingerprints: initialFingerprints, toolVersions: preflight.toolVersions, policyId: syncPolicy?.id }),
           verificationState: checkSummary.failedRequired?.some((entry) => entry.state === "blocked") ? "blocked" : "failed",
           synchronization: { state: "not_attempted" },
         });
         await (dependencies.persistEvidence ?? persistEvidence)(runtimePaths, record);
         evidenceWritten = true;
-        throw new VerificationError("verification_failed", "One or more required checks did not pass.");
+        const blocked = checkSummary.failedRequired?.map((entry) => {
+          const command = [entry.command, ...(entry.args ?? [])].join(" ").trim() || entry.checkId || "unknown command";
+          return `${command} (${entry.state}${entry.reason ? `: ${entry.reason}` : ""})`;
+        }).join(", ");
+        throw new VerificationError("verification_failed", `Required check blocked Done: ${blocked || "unknown check"}.`);
       }
       verifiedFingerprints = await (dependencies.buildFingerprints ?? buildFingerprints)(fingerprintArgs);
       if (!fingerprintsEqual(initialFingerprints, verifiedFingerprints)) {
         const record = createEvidenceRecord({
           attemptId,
           changeId: candidate.changeId,
-          ...evidenceInputs({ traceability, checkSummary, fingerprints: verifiedFingerprints, toolVersions: preflight.toolVersions }),
+          ...evidenceInputs({ traceability, checkSummary, fingerprints: verifiedFingerprints, toolVersions: preflight.toolVersions, policyId: syncPolicy?.id }),
           verificationState: "failed",
           synchronization: { state: "not_attempted", errorCode: "fingerprint_changed" },
         });
@@ -152,20 +166,31 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
         throw new VerificationError("fingerprint_changed", "A required check changed verification inputs.");
       }
       try {
-        semantic = await (dependencies.runCodexVerification ?? runCodexVerification)({
-          repositoryRoot,
-          runtimePaths,
-          manifest,
-          checkSummary,
-          runCommand,
-          environment: dependencies.environment,
-        });
-        verification = (dependencies.reconcileVerification ?? reconcileVerification)({
-          manifest,
-          requiredChecks: checks,
-          checkSummary,
-          semanticResult: semantic,
-        });
+        if (syncPolicy) {
+          verification = (dependencies.reconcileBasicVerification ?? reconcileBasicVerification)({
+            manifest, checks, checkSummary, policy: syncPolicy,
+          });
+          if ((dependencies.environment ?? process.env).AI_LOCAL_RUN_OPTIONAL_SEMANTIC === "1") {
+            try {
+              semantic = await (dependencies.runCodexVerification ?? runCodexVerification)({
+                repositoryRoot, runtimePaths, manifest, checkSummary, runCommand,
+                environment: dependencies.environment,
+              });
+              semanticState = semantic?.passed ? "passed" : "failed";
+            } catch (optionalError) {
+              semanticState = "failed";
+              output.write(`Optional AI semantic review failed: ${optionalError.code ?? "verifier_unavailable"}.\n`);
+            }
+          }
+        } else {
+          semantic = await (dependencies.runCodexVerification ?? runCodexVerification)({
+            repositoryRoot, runtimePaths, manifest, checkSummary, runCommand,
+            environment: dependencies.environment,
+          });
+          verification = (dependencies.reconcileVerification ?? reconcileVerification)({
+            manifest, requiredChecks: checks, checkSummary, semanticResult: semantic,
+          });
+        }
       } catch (error) {
         const record = createEvidenceRecord({
           attemptId,
@@ -176,6 +201,8 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
             checkSummary,
             fingerprints: verifiedFingerprints,
             toolVersions: preflight.toolVersions,
+            policyId: syncPolicy?.id,
+            semanticState,
           }),
           verificationState: "failed",
           synchronization: { state: "not_attempted", errorCode: error.code ?? "semantic_verification_failed" },
@@ -186,7 +213,14 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
       }
     }
 
-    passing = { traceability, semantic, checkSummary, fingerprints: verifiedFingerprints, toolVersions: preflight.toolVersions };
+    if (syncPolicy) {
+      for (const result of checkSummary.results.filter((entry) => entry.required === false)) {
+        output.write(`Optional check ${[result.command, ...(result.args ?? [])].join(" ")}: ${result.state}.\n`);
+      }
+      output.write(`Optional AI semantic review: ${semanticState}.\n`);
+    }
+
+    passing = { traceability, semantic, checkSummary, fingerprints: verifiedFingerprints, toolVersions: preflight.toolVersions, policyId: syncPolicy?.id ?? null, semanticState };
 
     // All Git/GitHub state used by the write guard is fetched again after verification.
     const finalPreflight = await (dependencies.runPreflight ?? runPreflight)(config, { ...dependencies, runCommand });

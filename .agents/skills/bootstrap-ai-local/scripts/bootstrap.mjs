@@ -348,6 +348,14 @@ function configuration(settings) {
     packageManager: settings.packageManager,
     verification: {
       autoDiscover: settings.autoDiscover,
+      syncTask: {
+        requiredCommands: [
+          "git diff --check",
+          `${settings.packageManager} run frontend:test`,
+          `${settings.packageManager} run backend:test`,
+        ],
+        semanticReview: "optional",
+      },
       approvedPostgresHosts: ["localhost", "127.0.0.1", "::1"],
       executionProfiles: {},
       commands: settings.verificationCommands.map(([command, ...args]) => ({

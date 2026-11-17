@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ import { findReusableEvidence, resolveVerificationAttempt } from "../retry.mjs";
 function inputs(overrides = {}) {
   return {
     identities: {
-      repository: "example-owner/example-repo",
+      repository: "dotin2001/ai-marketing-report",
       branch: "feature/set_up",
       issueId: "I_1",
       projectId: "P_1",
@@ -121,4 +121,26 @@ test("every identity and fingerprint input forces fresh verification when change
     });
     assert.equal(result.kind, "fresh", `fingerprint ${field}`);
   }
+});
+
+test("basic policy rejects old or differently governed evidence", async () => {
+  const { runtimePaths, current } = await fixture();
+  const mismatch = await findReusableEvidence({
+    runtimePaths, changeId: "change-1", ...current, policyId: "basic-local-v1",
+  });
+  assert.equal(mismatch.kind, "fresh");
+  const oldPath = path.join(runtimePaths.evidence, "change-1", "legacy.json");
+  await mkdir(path.dirname(oldPath), { recursive: true });
+  await writeFile(oldPath, JSON.stringify({
+    schemaVersion: 1,
+    identities: current.identities,
+    fingerprints: { ...current.fingerprints, policy: "basic-local-v1" },
+    verification: { state: "passed", policyId: "basic-local-v1" },
+    synchronization: { state: "failed" },
+  }));
+  const legacy = await findReusableEvidence({
+    runtimePaths, changeId: "change-1", identities: current.identities,
+    fingerprints: { ...current.fingerprints, policy: "basic-local-v1" }, policyId: "basic-local-v1",
+  });
+  assert.equal(legacy.kind, "fresh");
 });

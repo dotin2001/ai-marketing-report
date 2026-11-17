@@ -11,6 +11,10 @@
   "packageManager": "npm",
   "verification": {
     "autoDiscover": true,
+    "syncTask": {
+      "requiredCommands": ["git diff --check", "npm run frontend:test", "npm run backend:test"],
+      "semanticReview": "optional"
+    },
     "approvedPostgresHosts": ["localhost", "127.0.0.1", "::1"],
     "executionProfiles": {
       "backend:check": "backend-test",

@@ -4,6 +4,10 @@ import test from "node:test";
 import { main } from "../cli.mjs";
 import { GitHubError, LockError, VerificationError } from "../errors.mjs";
 import { parseIssueAcceptanceCriteria } from "../verification.mjs";
+import { discoverVerificationChecks, executeRequiredChecks } from "../verification.mjs";
+import path from "node:path";
+import os from "node:os";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 
 const changeId = "change-7";
 const traceability = {
@@ -128,6 +132,117 @@ test("verified In Progress item moves to Done through the same completion gates"
   assert.equal(value.state.checks, 1);
   assert.equal(value.state.mutations, 1);
   assert.equal(value.records.at(-1).synchronization.state, "succeeded");
+});
+
+function basicHarness(overrides = {}) {
+  const policy = { id: "basic-local-v1", requiredCommands: ["git diff --check", "npm run frontend:test", "npm run backend:test"], semanticReview: "optional" };
+  const basicChecks = [
+    checks[0],
+    { id: "git", command: "git", args: ["diff", "--check"], required: true, applicable: true },
+    { id: "backend", command: "npm", args: ["run", "backend:test"], required: true, applicable: true },
+    { id: "live", command: "npm", args: ["run", "database:check"], required: false, applicable: false },
+  ];
+  const results = [
+    passedCheck,
+    { checkId: "git", command: "git", args: ["diff", "--check"], required: true, state: "passed" },
+    { checkId: "backend", command: "npm", args: ["run", "backend:test"], required: true, state: "passed" },
+    { checkId: "live", command: "npm", args: ["run", "database:check"], required: false, state: "skipped" },
+  ];
+  const value = harness({
+    loadConfiguration: async () => ({ ...config, verification: { syncTask: policy, approvedPostgresHosts: ["localhost"] } }),
+    discoverVerificationChecks: async () => basicChecks,
+    executeRequiredChecks: async () => ({ passed: true, results, failedRequired: [] }),
+    runCodexVerification: async () => assert.fail("optional semantic review should not run by default"),
+    ...overrides,
+  });
+  return { ...value, basicChecks, results };
+}
+
+test("basic policy allows Done with skipped or failed optional checks and no semantic result", async () => {
+  for (const optionalState of ["skipped", "failed"]) {
+    const value = basicHarness();
+    value.dependencies.executeRequiredChecks = async () => ({
+      passed: true, results: value.results.map((entry) => entry.checkId === "live" ? { ...entry, state: optionalState } : entry),
+      failedRequired: [],
+    });
+    const result = await main(["--sync-task", "--change", changeId], value.dependencies);
+    assert.equal(result.kind, "synchronized");
+    assert.equal(value.state.mutations, 1);
+    assert.equal(value.records.at(-1).verification.criteria.length, 0);
+    assert.equal(value.records.at(-1).verification.policyId, "basic-local-v1");
+    assert.equal(value.records.at(-1).verification.semanticState, "skipped");
+    assert.match(value.output.value, new RegExp(`Optional check npm run database:check: ${optionalState}`));
+  }
+});
+
+test("failed optional AI review is reported without blocking a passing basic gate", async () => {
+  const value = basicHarness({
+    environment: { AI_LOCAL_RUN_OPTIONAL_SEMANTIC: "1" },
+    runCodexVerification: async () => ({ passed: false, results: [] }),
+  });
+  const result = await main(["--sync-task", "--change", changeId], value.dependencies);
+  assert.equal(result.kind, "synchronized");
+  assert.equal(value.state.mutations, 1);
+  assert.equal(value.records.at(-1).verification.semanticState, "failed");
+  assert.match(value.output.value, /Optional AI semantic review: failed/);
+});
+
+test("issue 6 acceptance command uses service-free basic checks and mocked Project status", async () => {
+  const acceptanceChange = "gh-6-implement-object-storage-integration";
+  const repositoryRoot = await mkdtemp(path.join(os.tmpdir(), "ai-local-bootstrap-acceptance-"));
+  const taskPath = path.join(repositoryRoot, "openspec", "changes", acceptanceChange, "tasks.md");
+  await mkdir(path.dirname(taskPath), { recursive: true });
+  await writeFile(taskPath, "- [x] Run `npm run backend:check` and `npm run storage:test:live`.\n");
+  await writeFile(path.join(repositoryRoot, "package.json"), JSON.stringify({ scripts: {
+    "backend:check": "npm run backend:test",
+    "backend:test": "uv --directory backend run pytest -m \"not postgres and not storage_live\"",
+    "storage:test:live": "uv --directory backend run pytest -m \"storage_live and postgres\"",
+  } }));
+  const policy = { id: "basic-local-v1", requiredCommands: ["git diff --check", "npm run frontend:test", "npm run backend:test"], semanticReview: "optional" };
+  const observed = [];
+  const value = harness({
+    repositoryRoot,
+    loadConfiguration: async () => ({ ...config, repositoryRoot, verification: { syncTask: policy, approvedPostgresHosts: ["localhost"] } }),
+    discoverSynchronizationCandidates: async () => [{ changeId: acceptanceChange, traceability: { ...traceability, changeId: acceptanceChange, issueNumber: 6 }, archived: false }],
+    fetchProjectItem: async () => ({ ...item, issueNumber: 6 }),
+    fetchIssueContext: async () => ({ ...issue, number: 6 }),
+    buildVerificationManifest: async () => ({ ...manifest, artifactPaths: [path.join(repositoryRoot, "openspec", "changes", acceptanceChange, "tasks.md")] }),
+    discoverVerificationChecks,
+    executeRequiredChecks,
+    preflightPostgres: async () => assert.fail("service-free backend:test must not probe PostgreSQL"),
+    runCommand: async (command, args, options) => {
+      observed.push({ command: [command, ...args].join(" "), env: options.env });
+      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+    },
+    runCodexVerification: async () => assert.fail("semantic review is optional"),
+  });
+  const result = await main(["--sync-task", "--change", acceptanceChange], value.dependencies);
+  assert.equal(result.kind, "synchronized");
+  assert.equal(value.state.mutations, 1); // The harness's status writer is a mock; no live GitHub call is possible.
+  assert.deepEqual(observed.map((entry) => entry.command), [
+    `openspec validate ${acceptanceChange} --strict --json`, "git diff --check", "npm run backend:test",
+  ]);
+  const backend = observed.find((entry) => entry.command === "npm run backend:test");
+  assert.equal(backend.env.APP_ENV, "test");
+  assert.equal(backend.env.AI_LOCAL_DISABLE_DOTENV, "1");
+  assert.equal(backend.env.TEST_DATABASE_URL, undefined);
+  assert.equal(backend.env.MIGRATION_DATABASE_URL, undefined);
+  assert.match(value.output.value, /Optional check npm run storage:test:live: skipped/);
+});
+
+test("every nonpassing basic check blocks Done and names the command", async () => {
+  for (const state of ["failed", "blocked", "skipped", "missing"]) {
+    const value = basicHarness();
+    value.dependencies.executeRequiredChecks = async () => {
+      const results = value.results.filter((entry) => state !== "missing" || entry.checkId !== "backend")
+        .map((entry) => entry.checkId === "backend" ? { ...entry, state } : entry);
+      return { passed: state === "missing", results, failedRequired: state === "missing" ? [] : [results.find((entry) => entry.checkId === "backend")] };
+    };
+    const result = await main(["--sync-task", "--change", changeId], value.dependencies);
+    assert.equal(result.code, state === "missing" ? "verification_check_missing" : "verification_failed");
+    assert.match(value.errorOutput.value, /npm run backend:test/);
+    assert.equal(value.state.mutations, 0);
+  }
 });
 
 test("failed completion check leaves In Progress untouched", async () => {

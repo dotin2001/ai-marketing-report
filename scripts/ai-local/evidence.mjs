@@ -5,7 +5,7 @@ import path from "node:path";
 import { VerificationError } from "./errors.mjs";
 import { redact } from "./process.mjs";
 
-export const EVIDENCE_SCHEMA_VERSION = 1;
+export const EVIDENCE_SCHEMA_VERSION = 2;
 
 function safeSegment(value, label) {
   if (typeof value !== "string" || !/^[A-Za-z0-9._-]+$/.test(value)) {
@@ -25,6 +25,8 @@ export function createEvidenceRecord({
   identities,
   criterionResults,
   commandResults,
+  policyId = null,
+  semanticState = null,
   fingerprints,
   toolVersions,
   verificationState,
@@ -46,6 +48,8 @@ export function createEvidenceRecord({
     identities,
     verification: {
       state: verificationState,
+      policyId,
+      semanticState,
       criteria: criterionResults.map((result) => ({
         id: result.id,
         verdict: result.verdict,
@@ -54,6 +58,7 @@ export function createEvidenceRecord({
       })),
       commands: commandResults.map((result) => ({
         checkId: result.checkId,
+        required: result.required ?? null,
         command: result.command,
         args: result.args,
         state: result.state,

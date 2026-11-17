@@ -50,7 +50,7 @@ A required `Todo` to `In Progress` status update or its confirmation SHALL fail 
 - **THEN** the command reports the confirmation failure and stops before proposal generation
 
 ### Requirement: Review and verified completion boundaries remain intact
-URL-targeted planning SHALL stop for human review after a validated new or reused proposal and SHALL NOT apply implementation, close the issue, switch branches, commit, push, merge, or deploy. Interactive planning SHALL retain its existing `Todo` selection and no-status-mutation behavior. The `--sync-task` workflow SHALL retain all existing task, acceptance, check, semantic-evidence, fingerprint, identity, and final-live-read gates before setting `Done`; after those gates pass, exactly `Todo` or `In Progress` may transition to `Done`, while `Done` remains idempotent and all other statuses remain conflicts. Manual `$openspec-apply-change` behavior SHALL remain separate from the CLI.
+URL-targeted planning SHALL stop for human review after a validated new or reused proposal and SHALL NOT apply implementation, close the issue, switch branches, commit, push, merge, or deploy. Interactive planning SHALL retain its existing `Todo` selection and no-status-mutation behavior. The `--sync-task` workflow SHALL retain its task, shared basic-check, fingerprint, identity, and final-live-read gates before setting `Done`; acceptance and semantic review SHALL be optional under `ai-local-basic-completion-policy`. After the required gates pass, exactly `Todo` or `In Progress` may transition to `Done`, while `Done` remains idempotent and all other statuses remain conflicts. Manual `$openspec-apply-change` behavior SHALL remain separate from the CLI.
 
 #### Scenario: URL-targeted proposal is ready
 - **WHEN** a new or reused URL-targeted proposal passes its existing validation
@@ -65,7 +65,7 @@ URL-targeted planning SHALL stop for human review after a validated new or reuse
 - **THEN** `--sync-task` updates only that item to `Done` and confirms the result
 
 #### Scenario: Completion gate fails
-- **WHEN** any required completion check, semantic evidence, identity, or fingerprint gate fails
+- **WHEN** any required basic completion check, task, identity, or fingerprint gate fails
 - **THEN** `--sync-task` does not change `In Progress` or any other status to `Done`
 
 #### Scenario: Existing completion statuses remain supported

@@ -1,6 +1,6 @@
 # Local AI Planning and Project Synchronization
 
-This repository uses a local, fail-closed workflow that turns one eligible GitHub Projects v2 `{{TODO_OPTION}}` issue into a reviewed OpenSpec proposal. URL-targeted planning confirms `{{IN_PROGRESS_OPTION}}` before proposal generation. After explicit implementation plus independent verification, synchronization changes only that Project item to `{{DONE_OPTION}}`.
+This repository uses a local workflow that turns one eligible GitHub Projects v2 `{{TODO_OPTION}}` issue into a reviewed OpenSpec proposal. URL-targeted planning confirms `{{IN_PROGRESS_OPTION}}` before proposal generation. After explicit implementation plus the shared basic local checks, synchronization changes only that Project item to `{{DONE_OPTION}}`.
 
 ## Configuration and prerequisites
 
@@ -12,7 +12,7 @@ gh auth refresh -h github.com -s repo,read:project,project
 gh auth status
 ```
 
-The configured repository is `{{REPOSITORY}}`, Project owner/number is `{{PROJECT_OWNER}}#{{PROJECT_NUMBER}}`, status field is `{{STATUS_FIELD}}`, and exact transition options are `{{TODO_OPTION}}`, `{{IN_PROGRESS_OPTION}}`, and `{{DONE_OPTION}}`. Required verification commands are explicit argv arrays under `verification.commands`; trusted package scripts and repository instructions are also discovered when `verification.autoDiscover` is true. Each ambiguous command can receive a `neutral`, `backend-test`, or `postgresql` profile through trusted configuration.
+The configured repository is `{{REPOSITORY}}`, Project owner/number is `{{PROJECT_OWNER}}#{{PROJECT_NUMBER}}`, status field is `{{STATUS_FIELD}}`, and exact transition options are `{{TODO_OPTION}}`, `{{IN_PROGRESS_OPTION}}`, and `{{DONE_OPTION}}`. The repository-wide `verification.syncTask` policy defines the basic `Done` gate; explicit argv arrays under `verification.commands`, trusted package scripts, and repository instructions remain discoverable for expanded verification. Each ambiguous command can receive a `neutral`, `backend-test`, or `postgresql` profile through trusted configuration.
 
 ## Preview and scaffold
 
@@ -72,7 +72,7 @@ This is a Codex skill invocation, not a shell executable, and is never called by
 node scripts/ai-local.mjs --help
 ```
 
-Before synchronization, complete every approved OpenSpec task and run the configured application checks. Synchronization independently runs strict OpenSpec validation, every explicit verification command, and applicable checks discovered from trusted repository files.
+Before synchronization, complete every approved OpenSpec task. Synchronization runs strict OpenSpec validation, `git diff --check`, and applicable `frontend:test` and `backend:test` scripts. Other discovered commands are optional for `Done` and remain separately runnable.
 
 The linked issue must contain a parseable section in this form:
 
@@ -83,15 +83,15 @@ The linked issue must contain a parseable section in this form:
 - Second observable outcome
 ```
 
-When the heading is absent, the complete non-empty issue body becomes one criterion; a malformed explicit section still fails closed. A failed, missing, skipped, timed-out, or unavailable required check produces failed or blocked evidence and cannot move the item to `{{DONE_OPTION}}`. Backend-test profiles run in a child environment with `APP_ENV=test` and a test-only dotenv-disable signal; the parent environment and dotenv files remain unchanged. Missing semantic evidence, progress without exactly one terminal result, or a failed Codex verification also fails closed.
+When the heading is absent, the complete non-empty issue body becomes one optional semantic-review criterion; a malformed explicit section still fails closed. A failed, missing, skipped, timed-out, or unavailable required basic check produces failed or blocked evidence and cannot move the item to `{{DONE_OPTION}}`. Backend-test profiles run in a child environment with `APP_ENV=test` and a test-only dotenv-disable signal; the parent environment and dotenv files remain unchanged. The service-free backend script's negated `postgres` and `storage_live` markers require no PostgreSQL or object-storage setup. Set `AI_LOCAL_RUN_OPTIONAL_SEMANTIC=1` to report an AI review result during synchronization; its failure does not block `Done`.
 
-PostgreSQL variables are conditional: a non-PostgreSQL check plan needs neither variable and performs no probe. For a PostgreSQL profile, use secret environment values with approved local hosts and matching isolated `_test` targets:
+PostgreSQL variables are unnecessary for the basic sync gate. For a separately run PostgreSQL check, use secret environment values with approved local hosts and matching isolated `_test` targets:
 
 ```sh
 APP_ENV=test \
 TEST_DATABASE_URL='postgresql+psycopg://<test-role>:<test-password>@localhost:5432/<isolated-name>_test' \
 MIGRATION_DATABASE_URL='postgresql+psycopg://<migration-role>:<migration-password>@localhost:5432/<isolated-name>_test' \
-{{RUN_COMMAND}} -- --sync-task --change <change-id>
+{{PACKAGE_MANAGER}} run database:check
 ```
 
 Malformed or unsafe URLs report `postgres_preflight_invalid`; socket permission denial reports `postgres_permission_denied`; a refused or timed-out service reports `postgres_unreachable`; server rejection reports `postgres_access_denied`. A command that runs after a successful preflight but fails an assertion reports `test_assertion_failed`.
@@ -110,7 +110,7 @@ Or select one change explicitly:
 {{RUN_COMMAND}} -- --sync-task --change <change-id>
 ```
 
-Only after tasks, acceptance criteria, required commands, semantic evidence, fingerprints, and final live identity/status checks all pass can the guarded mutation set the selected item's `{{STATUS_FIELD}}` field from exact `{{TODO_OPTION}}` or `{{IN_PROGRESS_OPTION}}` to exact `{{DONE_OPTION}}`. The issue remains open.
+Only after tasks, the basic required commands, fingerprints, and final live identity/status checks all pass can the guarded mutation set the selected item's `{{STATUS_FIELD}}` field from exact `{{TODO_OPTION}}` or `{{IN_PROGRESS_OPTION}}` to exact `{{DONE_OPTION}}`. Optional live-service and semantic results are reported when available. The issue remains open.
 
 Runtime links, evidence, bounded redacted events, locks, and temporary files stay under ignored `.ai-local/`. If GitHub synchronization fails after passing verification, retrying may reuse evidence only when every identity and fingerprint still matches.
 

@@ -10,6 +10,10 @@
   },
   "runtimeDirectory": ".ai-local",
   "verification": {
+    "syncTask": {
+      "requiredCommands": ["git diff --check", "npm run frontend:test", "npm run backend:test"],
+      "semanticReview": "optional"
+    },
     "executionProfiles": {
       "backend:check": "backend-test",
       "database:check": "postgresql"

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { discoverVerificationChecks } from "../verification.mjs";
+import { discoverVerificationChecks, executeRequiredChecks } from "../verification.mjs";
 
 test("discovers repository-specific checks only from trusted sources", async () => {
   const repositoryRoot = await mkdtemp(path.join(os.tmpdir(), "ai-local-checks-"));
@@ -142,4 +142,64 @@ test("does not treat an excluded PostgreSQL marker as a database requirement", a
   assert.equal(backend.executionProfile, "backend-test");
   assert.equal(backend.capabilities.postgresql, false);
   assert.deepEqual(backend.resolvedScripts, ["backend:check", "backend:test"]);
+});
+
+test("shared sync policy requires only applicable basic suites and skips expanded checks", async () => {
+  const repositoryRoot = await mkdtemp(path.join(os.tmpdir(), "ai-local-basic-plan-"));
+  const changeId = "backend-only";
+  const tasksPath = path.join(repositoryRoot, "openspec", "changes", changeId, "tasks.md");
+  await mkdir(path.dirname(tasksPath), { recursive: true });
+  await writeFile(tasksPath, "- [x] Run `npm run backend:check` and `npm run database:check`.\n");
+  await writeFile(path.join(repositoryRoot, "package.json"), JSON.stringify({ scripts: {
+    "backend:check": "npm run backend:test",
+    "backend:test": "uv --directory backend run pytest -m \"not postgres and not storage_live\"",
+    "frontend:test": "npm --prefix frontend test",
+    "database:check": "uv --directory backend run pytest -m postgres",
+  } }));
+  const configuration = { packageManager: "npm", verification: { syncTask: {
+    id: "basic-local-v1", requiredCommands: ["git diff --check", "npm run frontend:test", "npm run backend:test"], semanticReview: "optional",
+  } } };
+  const checks = await discoverVerificationChecks({
+    repositoryRoot, changeId, manifest: { artifactPaths: [tasksPath] }, configuration,
+  });
+  const byCommand = (command) => checks.find((check) => [check.command, ...check.args].join(" ") === command);
+  assert.equal(byCommand("openspec validate backend-only --strict --json").required, true);
+  assert.equal(byCommand("git diff --check").required, true);
+  assert.equal(byCommand("npm run backend:test").required, true);
+  assert.equal(byCommand("npm run backend:test").capabilities.postgresql, false);
+  assert.equal(byCommand("npm run frontend:test").required, false);
+  assert.equal(byCommand("npm run frontend:test").applicable, false);
+  assert.equal(byCommand("npm run database:check").required, false);
+  assert.equal(byCommand("npm run database:check").applicable, false);
+  let preflights = 0;
+  let backendEnvironment;
+  const result = await executeRequiredChecks(checks, {
+    environment: {},
+    preflightPostgres: async () => { preflights += 1; return { passed: false }; },
+    runCommand: async (command, args, options) => {
+      if ([command, ...args].join(" ") === "npm run backend:test") backendEnvironment = options.env;
+      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(result.passed, true);
+  assert.equal(preflights, 0);
+  assert.equal(backendEnvironment.APP_ENV, "test");
+  assert.equal(backendEnvironment.AI_LOCAL_DISABLE_DOTENV, "1");
+});
+
+test("parenthesized negative pytest markers do not imply PostgreSQL while positive markers do", async () => {
+  const repositoryRoot = await mkdtemp(path.join(os.tmpdir(), "ai-local-marker-plan-"));
+  const tasksPath = path.join(repositoryRoot, "openspec", "changes", "markers", "tasks.md");
+  await mkdir(path.dirname(tasksPath), { recursive: true });
+  await writeFile(tasksPath, "- [x] Run `npm run backend:test` and `npm run database:test:integration`.\n");
+  await writeFile(path.join(repositoryRoot, "package.json"), JSON.stringify({ scripts: {
+    "backend:test": "uv --directory backend run pytest -m \"not (postgres or storage_live)\"",
+    "database:test:integration": "uv --directory backend run pytest -m postgres",
+  } }));
+  const checks = await discoverVerificationChecks({
+    repositoryRoot, changeId: "markers", manifest: { artifactPaths: [tasksPath] },
+  });
+  const byScript = (name) => checks.find((check) => check.args.join(" ") === `run ${name}`);
+  assert.equal(byScript("backend:test").executionProfile, "backend-test");
+  assert.equal(byScript("database:test:integration").executionProfile, "postgresql");
 });

@@ -9,7 +9,7 @@ const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const VERIFICATION_EXECUTABLES = new Set([
   "npm", "pnpm", "yarn", "bun", "node", "npx", "python", "python3", "pytest",
   "ruff", "mypy", "alembic", "openspec", "cargo", "go", "make", "cmake",
-  "ctest", "gradle", "mvn", "dotnet",
+  "ctest", "gradle", "mvn", "dotnet", "git",
 ]);
 const EXECUTION_PROFILES = new Set(["neutral", "backend-test", "postgresql"]);
 const DEFAULT_POSTGRES_HOSTS = Object.freeze(["localhost", "127.0.0.1", "::1"]);
@@ -26,11 +26,34 @@ function validateVerification(value = {}, packageManager = "npm") {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ConfigurationError("verification configuration must be an object.");
   }
-  const allowedKeys = new Set(["autoDiscover", "commands", "executionProfiles", "approvedPostgresHosts"]);
+  const allowedKeys = new Set(["autoDiscover", "commands", "executionProfiles", "approvedPostgresHosts", "syncTask"]);
   for (const key of Object.keys(value)) {
     if (!allowedKeys.has(key)) {
       throw new ConfigurationError(`verification.${key} is not supported.`);
     }
+  }
+
+  let syncTask = null;
+  if (value.syncTask !== undefined) {
+    const policy = value.syncTask;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)
+      || Object.keys(policy).some((key) => !["requiredCommands", "semanticReview"].includes(key))) {
+      throw new ConfigurationError("verification.syncTask must contain only requiredCommands and semanticReview.");
+    }
+    const expected = ["git diff --check", `${packageManager} run frontend:test`, `${packageManager} run backend:test`];
+    if (!Array.isArray(policy.requiredCommands)
+      || policy.requiredCommands.length !== expected.length
+      || policy.requiredCommands.some((command, index) => command !== expected[index])) {
+      throw new ConfigurationError(`verification.syncTask.requiredCommands must be ${expected.join(", ")} in that order.`);
+    }
+    if (policy.semanticReview !== "optional") {
+      throw new ConfigurationError("verification.syncTask.semanticReview must be optional.");
+    }
+    syncTask = Object.freeze({
+      id: "basic-local-v1",
+      requiredCommands: Object.freeze([...expected]),
+      semanticReview: "optional",
+    });
   }
 
   const rawProfiles = value.executionProfiles ?? {};
@@ -90,6 +113,9 @@ function validateVerification(value = {}, packageManager = "npm") {
     if (!Array.isArray(entry.args) || entry.args.some((arg) => typeof arg !== "string" || /[\0\r\n]/.test(arg))) {
       throw new ConfigurationError(`${label}.args must be a string array without control characters.`);
     }
+    if (command === "git" && (entry.args.length !== 2 || entry.args[0] !== "diff" || entry.args[1] !== "--check")) {
+      throw new ConfigurationError(`${label} permits only git diff --check.`);
+    }
     const timeoutMs = entry.timeoutMs ?? 5 * 60_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 30 * 60_000) {
       throw new ConfigurationError(`${label}.timeoutMs must be between 1000 and 1800000.`);
@@ -107,6 +133,7 @@ function validateVerification(value = {}, packageManager = "npm") {
   });
 
   return Object.freeze({
+    syncTask,
     autoDiscover,
     commands: Object.freeze(commands),
     executionProfiles: Object.freeze(executionProfiles),

@@ -142,11 +142,13 @@ export async function buildFingerprints({
   instructionPaths,
   issue,
   checks,
+  policyId,
   toolVersions,
   runCommand,
 }) {
   const worktree = await fingerprintWorktree({ repositoryRoot, runCommand });
   return Object.freeze({
+    policy: policyId ?? null,
     identity: fingerprintIdentity(identity),
     worktree: worktree.digest,
     specifications: await fingerprintSpecifications({ artifactPaths, instructionPaths }),
@@ -156,7 +158,7 @@ export async function buildFingerprints({
 }
 
 export function fingerprintsEqual(left, right) {
-  return ["identity", "worktree", "specifications", "issueRequirements", "requiredChecks"].every(
+  return ["policy", "identity", "worktree", "specifications", "issueRequirements", "requiredChecks"].every(
     (field) => left?.[field] === right?.[field],
   );
 }

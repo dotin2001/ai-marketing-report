@@ -1,6 +1,6 @@
 ## Purpose
 
-Define evidence-based completion verification and conflict-safe synchronization so a GitHub Project item reaches Done only when its linked, approved OpenSpec work is demonstrably complete.
+Define evidence-based completion verification and conflict-safe synchronization so a GitHub Project item reaches Done only when its linked, approved OpenSpec work satisfies the repository's current shared completion policy. The `ai-local-basic-completion-policy` capability governs required versus optional checks for `--sync-task`.
 
 ## ADDED Requirements
 
@@ -31,22 +31,22 @@ Before verification and again immediately before mutation, the workflow SHALL ve
 - **THEN** synchronization stops, preserves diagnostic evidence, and leaves Project status unchanged
 
 ### Requirement: Completion requires specification and acceptance evidence
-The workflow SHALL read the approved proposal, design, specifications, and tasks and compare the actual current implementation against every current issue acceptance criterion and every normative OpenSpec requirement. It SHALL require every implementation task and its required verification to be genuinely complete and marked complete. A successful agent or test process alone SHALL NOT be treated as proof of completion.
+The workflow SHALL read the approved proposal, design, specifications, and tasks and require every implementation task to be marked complete. AI review of issue acceptance criteria and normative OpenSpec requirements SHALL be available as supplementary verification under the shared completion policy. A successful agent process alone SHALL NOT be treated as proof that required basic checks passed.
 
 #### Scenario: All requirements are evidenced
 - **WHEN** each acceptance criterion, normative requirement, and completed task has specific implementation or verification evidence
-- **THEN** the semantic completion gate passes
+- **THEN** the optional semantic review records passing evidence
 
 #### Scenario: Task checkbox is incomplete
 - **WHEN** any required task is unchecked or claims verification that was not performed
-- **THEN** the completion gate fails and Project status remains unchanged
+- **THEN** the required task gate fails and Project status remains unchanged
 
 #### Scenario: Tests pass but a criterion is unmet
 - **WHEN** all executed commands pass but an issue criterion or OpenSpec requirement lacks evidence or is not implemented
-- **THEN** the completion gate fails and Project status remains unchanged
+- **THEN** the optional semantic review reports the unmet criterion without overriding a passing basic-check gate
 
 ### Requirement: Repository-specific checks cover the current worktree
-The workflow SHALL determine required verification commands from current repository instructions, approved OpenSpec artifacts, and declared project scripts rather than assuming a fixed stack. It SHALL include relevant tracked and untracked changes in verification and SHALL run every required applicable check, including strict OpenSpec validation and any required tests, linting, type checks, builds, or database and integration checks. A required skipped, blocked, missing, or failed check SHALL fail synchronization.
+The workflow SHALL discover verification commands from trusted repository instructions, approved OpenSpec artifacts, and declared project scripts rather than issue content. The shared completion policy SHALL determine which discovered checks are required for `Done`: strict OpenSpec validation, `git diff --check`, and applicable frontend/backend unit tests. Live database, migration, storage, and AI semantic checks SHALL remain separately runnable and optional for synchronization. A required skipped, blocked, missing, or failed check SHALL fail synchronization.
 
 #### Scenario: Dirty worktree contains relevant implementation
 - **WHEN** relevant implementation or specification changes are uncommitted
@@ -57,11 +57,11 @@ The workflow SHALL determine required verification commands from current reposit
 - **THEN** the workflow records the command and result, reports the failure, and leaves status unchanged
 
 #### Scenario: Required check cannot run
-- **WHEN** a required check is missing, skipped, or blocked by unavailable infrastructure
+- **WHEN** a required basic check is missing, skipped, or blocked
 - **THEN** the workflow reports incomplete verification and leaves status unchanged
 
 ### Requirement: Verification evidence is durable and invalidated by change
-For every synchronization attempt, the workflow SHALL persist a credential-free local evidence record containing GitHub and OpenSpec identities, verification commands and results, per-criterion results, relevant code and specification fingerprints, issue-requirement and required-check fingerprints, timestamp, and synchronization outcome. Evidence from a passing verification MAY be reused after a GitHub synchronization failure only when all recorded identities and fingerprints still match; otherwise verification SHALL run again.
+For every synchronization attempt, the workflow SHALL persist a credential-free local evidence record containing GitHub and OpenSpec identities, required and available optional verification results, relevant code and specification fingerprints, issue-requirement and required-check/policy fingerprints, timestamp, and synchronization outcome. Evidence from a passing verification MAY be reused after a GitHub synchronization failure only when all recorded identities, policy, and fingerprints still match; otherwise verification SHALL run again.
 
 #### Scenario: GitHub update fails after passing verification
 - **WHEN** all completion gates pass but the GitHub mutation fails
