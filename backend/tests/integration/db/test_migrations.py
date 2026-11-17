@@ -32,7 +32,7 @@ def test_migration_scaffold_loads_without_connecting() -> None:
     scripts = ScriptDirectory.from_config(config)
     assert scripts.dir == str(BACKEND / "alembic")
     assert len(scripts.get_heads()) == 1
-    assert len(list(scripts.walk_revisions())) == 1
+    assert len(list(scripts.walk_revisions())) == 2
     assert "invalid:invalid" in (config.get_main_option("sqlalchemy.url") or "")
 
 

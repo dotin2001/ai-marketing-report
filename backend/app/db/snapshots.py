@@ -58,7 +58,7 @@ class SourceSnapshot(SnapshotModel):
 
 
 class MappingSnapshot(SnapshotModel):
-    source_column_ordinal: int = Field(gt=0)
+    source_column_ordinal: int = Field(ge=0)
     canonical_field: Literal[
         "date", "campaign_name", "currency", "impressions", "clicks", "spend", "leads"
     ]
@@ -165,8 +165,25 @@ class ClaimSnapshot(SnapshotModel):
     source_id: UUID | None = None
 
 
+class ChartSnapshot(SnapshotModel):
+    chart_type: Literal["bar", "line", "table"]
+    title: str = Field(min_length=1, max_length=160)
+    x_label: str | None = Field(default=None, max_length=80)
+    y_label: str | None = Field(default=None, max_length=80)
+    scope: str = Field(min_length=1, max_length=64)
+    metric_result_ids: tuple[UUID, ...] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def valid_references(self) -> ChartSnapshot:
+        if not self.title.strip() or not self.scope.strip():
+            raise ValueError("chart title and scope must not be blank")
+        if len(self.metric_result_ids) != len(set(self.metric_result_ids)):
+            raise ValueError("chart metric references must be unique")
+        return self
+
+
 class ReportVersionSnapshot(SnapshotModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     report_id: UUID
     report_name: str = Field(min_length=1, max_length=255)
     period_start: date
@@ -184,6 +201,8 @@ class ReportVersionSnapshot(SnapshotModel):
 
     @model_validator(mode="after")
     def reproducibility_fields_are_coherent(self) -> ReportVersionSnapshot:
+        if type(self) is ReportVersionSnapshot and self.schema_version != 1:
+            raise ValueError("schema 1 snapshot must declare schema version 1")
         if self.period_end < self.period_start:
             raise ValueError("report period is reversed")
         if not self.objectives:
@@ -194,3 +213,50 @@ class ReportVersionSnapshot(SnapshotModel):
         elif self.canonical_data_identity is not None or self.metrics:
             raise ValueError("canonical data and metrics require a confirmed import")
         return self
+
+
+class ReportVersionSnapshotV2(ReportVersionSnapshot):
+    schema_version: Literal[2] = 2
+    dataset_id: UUID | None = None
+    metric_result_set_id: UUID | None = None
+    analysis_result_id: UUID | None = None
+    charts: tuple[ChartSnapshot, ...] = Field(default=(), max_length=16)
+
+    @model_validator(mode="after")
+    def bindings_are_coherent(self) -> ReportVersionSnapshotV2:
+        if self.source.source_type == "csv":
+            if self.confirmed_import is None or self.dataset_id is None:
+                raise ValueError("structured version requires confirmed import and dataset binding")
+            if self.metrics and self.metric_result_set_id is None:
+                raise ValueError("structured metrics require a result-set binding")
+            if not self.metrics and self.metric_result_set_id is not None:
+                raise ValueError("result-set binding requires included metrics")
+        elif (
+            self.confirmed_import is not None
+            or self.dataset_id is not None
+            or self.metric_result_set_id is not None
+            or self.metrics
+        ):
+            raise ValueError("text-only version cannot contain structured data or metrics")
+        if (self.analysis_result_id is None) != (self.analysis is None):
+            raise ValueError("analysis binding and snapshot must agree")
+        if self.analysis is not None and self.analysis_result_id != self.analysis.result_id:
+            raise ValueError("analysis result identity does not match")
+        metric_ids = {metric.metric_result_id for metric in self.metrics}
+        if len(metric_ids) != len(self.metrics):
+            raise ValueError("metric result identities must be unique")
+        if any(not set(chart.metric_result_ids).issubset(metric_ids) for chart in self.charts):
+            raise ValueError("chart references a metric absent from the snapshot")
+        if self.source.source_type == "text" and (self.charts or self.analysis is not None):
+            raise ValueError("text-only version cannot contain charts or structured analysis")
+        return self
+
+
+def parse_report_version_snapshot(value: object) -> ReportVersionSnapshot | ReportVersionSnapshotV2:
+    if not isinstance(value, dict):
+        raise ValueError("report version snapshot must be an object")
+    if value.get("schema_version") == 1:
+        return ReportVersionSnapshot.model_validate(value)
+    if value.get("schema_version") == 2:
+        return ReportVersionSnapshotV2.model_validate(value)
+    raise ValueError("unsupported report version snapshot schema")

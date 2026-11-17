@@ -273,6 +273,20 @@ Each immutable report version preserves:
 
 PDF export is a separate version-bound logical operation. Rendering consumes only the version snapshot; a failed export leaves the version intact, and export retry targets the same version without creating or switching a report version.
 
+Schema 2 snapshots bind the confirmed `dataset_id`, optional `metric_result_set_id` and
+`analysis_result_id`, and ordered chart declarations to the saved render content.
+Chart declarations contain presentation labels, scope, and IDs of included computed
+metrics; they contain no numeric overrides. Text-only versions leave all structured
+bindings absent. Existing schema 1 snapshots remain readable without guessed bindings.
+The Alembic revision `f1a7b2c3d4e5` adds owner/report-consistent version bindings and
+revisioned draft charts; a downgrade is guarded when schema 2 versions or charts exist.
+Dataset commitment and version save/restore use the backend domain services inside a
+database transaction. They require the current confirmed input, an expected active
+draft revision for version operations, and scoped idempotency keys for save/restore.
+No new environment variables are required. Verify with `npm run backend:check` and
+the PostgreSQL database suite using `APP_ENV=test`, `DATABASE_URL`,
+`TEST_DATABASE_URL`, and `MIGRATION_DATABASE_URL` pointed at isolated test databases.
+
 ## Access Control
 
 All user-visible resources inherit ownership from the report. The backend must verify the authenticated principal for reads, writes, jobs, version access, and downloads. Object keys are not authorization tokens. Downloads use a short-lived signed URL or an authorized backend response.

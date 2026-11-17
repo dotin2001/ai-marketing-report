@@ -109,8 +109,9 @@ Implement tasks from an OpenSpec change.
    Display:
    - Tasks completed this session
    - Overall progress: "N/M tasks complete"
-   - If all done: suggest archive
+   - If all done: suggest archive after any repository-specific task synchronization that needs the active change directory
    - If paused: explain why and wait for guidance
+   - If the repository has an `ai:local --sync-task` workflow and this change is linked to an issue, show its exact sync command before the archive suggestion. Copy the change identifier from the selected CLI change name or `changeRoot` basename, preserving every character. Check that the corresponding change directory exists before presenting the command. Use the repository's package manager. Do not run synchronization as part of apply; it performs verification and may update a GitHub Project item.
 
 **Output During Implementation**
 
@@ -140,7 +141,10 @@ Working on task 4/7: <task description>
 - [x] Task 2
 ...
 
-All tasks complete! You can archive this change with `$openspec-archive-change (Codex) or /openspec-archive-change (other agents)`.
+All tasks complete! If this repository uses `ai:local` and the change is issue-linked, run the exact command for this change before archiving. For npm repositories:
+`npm run ai:local -- --sync-task --change <exact-change-name>`
+
+After synchronization, you can archive this change with `$openspec-archive-change (Codex) or /openspec-archive-change (other agents)`.
 ```
 
 **Output On Pause (Issue Encountered)**

@@ -218,6 +218,72 @@ class DraftClaim(UUIDPrimaryKeyMixin, Base):
     )
 
 
+class DraftChart(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "draft_charts"
+
+    owner_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+    report_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    chart_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    x_label: Mapped[str | None] = mapped_column(String(80))
+    y_label: Mapped[str | None] = mapped_column(String(80))
+    scope: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["draft_id", "report_id", "owner_id"],
+            ["report_drafts.id", "report_drafts.report_id", "report_drafts.owner_id"],
+            name="fk_draft_charts_draft_aggregate",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("draft_id", "ordinal", name="uq_draft_charts_order"),
+        UniqueConstraint(
+            "id", "draft_id", "report_id", "owner_id", name="uq_draft_charts_aggregate"
+        ),
+        CheckConstraint("ordinal > 0", name="ordinal_positive"),
+        CheckConstraint("chart_type IN ('bar','line','table')", name="chart_type_allowed"),
+        CheckConstraint("btrim(title) <> ''", name="title_not_blank"),
+        CheckConstraint("btrim(scope) <> ''", name="scope_not_blank"),
+    )
+
+
+class DraftChartMetricReference(Base):
+    __tablename__ = "draft_chart_metric_references"
+
+    chart_id: Mapped[UUID] = mapped_column(UUID_TYPE, primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    metric_result_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+    report_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chart_id", "draft_id", "report_id", "owner_id"],
+            [
+                "draft_charts.id",
+                "draft_charts.draft_id",
+                "draft_charts.report_id",
+                "draft_charts.owner_id",
+            ],
+            name="fk_draft_chart_metric_references_chart",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["metric_result_id", "report_id", "owner_id"],
+            ["metric_results.id", "metric_results.report_id", "metric_results.owner_id"],
+            name="fk_draft_chart_metric_references_metric",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "chart_id", "metric_result_id", name="uq_draft_chart_metric_references_metric"
+        ),
+        CheckConstraint("ordinal > 0", name="ordinal_positive"),
+    )
+
+
 class DraftItemMetricReference(Base):
     __tablename__ = "draft_item_metric_references"
 
@@ -1234,6 +1300,9 @@ class ReportVersion(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     source_draft_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
     source_draft_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    dataset_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
+    metric_result_set_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
+    analysis_result_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
     template_version: Mapped[str] = mapped_column(String(64), nullable=False)
     snapshot_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -1250,6 +1319,32 @@ class ReportVersion(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             ["source_draft_id", "report_id", "owner_id"],
             ["report_drafts.id", "report_drafts.report_id", "report_drafts.owner_id"],
             name="fk_report_versions_draft",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["dataset_id", "report_id", "owner_id"],
+            [
+                "canonical_datasets.id",
+                "canonical_datasets.report_id",
+                "canonical_datasets.owner_id",
+            ],
+            name="fk_report_versions_dataset",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["metric_result_set_id", "report_id", "owner_id"],
+            [
+                "metric_result_sets.id",
+                "metric_result_sets.report_id",
+                "metric_result_sets.owner_id",
+            ],
+            name="fk_report_versions_metric_result_set",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["analysis_result_id", "report_id", "owner_id"],
+            ["analysis_results.id", "analysis_results.report_id", "analysis_results.owner_id"],
+            name="fk_report_versions_analysis_result",
             ondelete="RESTRICT",
         ),
         UniqueConstraint("report_id", "version_number", name="uq_report_versions_number"),

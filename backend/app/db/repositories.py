@@ -26,6 +26,8 @@ from app.db.models import (
     ConfirmedImport,
     ConfirmedImportWarningAcknowledgement,
     DatasetCurrency,
+    DraftChart,
+    DraftChartMetricReference,
     DraftClaim,
     DraftLimitation,
     DraftNarrativeItem,
@@ -49,7 +51,12 @@ from app.db.models import (
     ReportVersion,
     SourceReviewConfirmation,
 )
-from app.db.snapshots import ReportVersionSnapshot
+from app.db.snapshots import (
+    ChartSnapshot,
+    ReportVersionSnapshot,
+    ReportVersionSnapshotV2,
+    parse_report_version_snapshot,
+)
 
 
 class ConcurrencyConflict(RuntimeError):
@@ -162,6 +169,95 @@ async def save_draft_objectives(
         )
         for ordinal, content in enumerate(objectives, start=1)
     )
+    return expected_revision + 1
+
+
+async def save_draft_charts(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    draft_id: UUID,
+    expected_revision: int,
+    charts: Sequence[ChartSnapshot | dict[str, object]],
+) -> int:
+    if len(charts) > 16:
+        raise ValueError("at most 16 charts are allowed")
+    validated = tuple(ChartSnapshot.model_validate(chart) for chart in charts)
+    report = await session.scalar(
+        select(Report).where(Report.id == report_id, Report.owner_id == owner_id).with_for_update()
+    )
+    if report is None:
+        raise ConcurrencyConflict("report is unavailable")
+    metric_ids = {metric_id for chart in validated for metric_id in chart.metric_result_ids}
+    if metric_ids:
+        if report.current_metric_result_set_id is None:
+            raise ValueError("charts require a current metric result set")
+        found = set(
+            await session.scalars(
+                select(MetricResult.id).where(
+                    MetricResult.id.in_(metric_ids),
+                    MetricResult.report_id == report_id,
+                    MetricResult.owner_id == owner_id,
+                    MetricResult.result_set_id == report.current_metric_result_set_id,
+                )
+            )
+        )
+        if found != metric_ids:
+            raise ValueError("chart metric reference is not current for this report")
+    changed = await session.execute(
+        update(ReportDraft)
+        .where(
+            ReportDraft.id == draft_id,
+            ReportDraft.report_id == report_id,
+            ReportDraft.owner_id == owner_id,
+            ReportDraft.is_active.is_(True),
+            ReportDraft.revision == expected_revision,
+        )
+        .values(revision=expected_revision + 1, updated_at=func.current_timestamp())
+    )
+    if _affected(changed) != 1:
+        raise ConcurrencyConflict("draft revision is stale")
+    old_ids = list(
+        await session.scalars(
+            select(DraftChart.id).where(
+                DraftChart.draft_id == draft_id,
+                DraftChart.report_id == report_id,
+                DraftChart.owner_id == owner_id,
+            )
+        )
+    )
+    if old_ids:
+        await session.execute(
+            delete(DraftChartMetricReference).where(DraftChartMetricReference.chart_id.in_(old_ids))
+        )
+        await session.execute(delete(DraftChart).where(DraftChart.id.in_(old_ids)))
+    for ordinal, declaration in enumerate(validated, start=1):
+        chart = DraftChart(
+            owner_id=owner_id,
+            report_id=report_id,
+            draft_id=draft_id,
+            ordinal=ordinal,
+            chart_type=declaration.chart_type,
+            title=declaration.title,
+            x_label=declaration.x_label,
+            y_label=declaration.y_label,
+            scope=declaration.scope,
+        )
+        session.add(chart)
+        await session.flush()
+        session.add_all(
+            DraftChartMetricReference(
+                chart_id=chart.id,
+                ordinal=metric_ordinal,
+                metric_result_id=metric_id,
+                owner_id=owner_id,
+                report_id=report_id,
+                draft_id=draft_id,
+            )
+            for metric_ordinal, metric_id in enumerate(declaration.metric_result_ids, start=1)
+        )
+    await session.flush()
     return expected_revision + 1
 
 
@@ -1041,7 +1137,7 @@ async def create_report_version(
     report_id: UUID,
     draft_id: UUID,
     expected_revision: int,
-    snapshot: ReportVersionSnapshot,
+    snapshot: ReportVersionSnapshot | ReportVersionSnapshotV2,
     snapshot_identity: bytes,
     template_version: str,
     idempotency: IdempotencyRecord | None = None,
@@ -1085,6 +1181,13 @@ async def create_report_version(
         or snapshot.template_version != template_version
     ):
         raise ConcurrencyConflict("active draft revision is stale")
+    if isinstance(snapshot, ReportVersionSnapshotV2):
+        if (
+            report.current_dataset_id != snapshot.dataset_id
+            or report.current_metric_result_set_id != snapshot.metric_result_set_id
+            or report.current_analysis_result_id != snapshot.analysis_result_id
+        ):
+            raise ConcurrencyConflict("version bindings are no longer current")
     existing = await session.scalar(
         select(ReportVersion).where(
             ReportVersion.owner_id == owner_id,
@@ -1114,6 +1217,13 @@ async def create_report_version(
         version_number=int(current or 0) + 1,
         source_draft_id=draft_id,
         source_draft_revision=expected_revision,
+        dataset_id=snapshot.dataset_id if isinstance(snapshot, ReportVersionSnapshotV2) else None,
+        metric_result_set_id=(
+            snapshot.metric_result_set_id if isinstance(snapshot, ReportVersionSnapshotV2) else None
+        ),
+        analysis_result_id=(
+            snapshot.analysis_result_id if isinstance(snapshot, ReportVersionSnapshotV2) else None
+        ),
         template_version=template_version,
         snapshot_schema_version=snapshot.schema_version,
         snapshot=snapshot.model_dump(mode="json"),
@@ -1132,7 +1242,7 @@ async def create_report_version(
     return version
 
 
-def report_snapshot_identity(snapshot: ReportVersionSnapshot) -> bytes:
+def report_snapshot_identity(snapshot: ReportVersionSnapshot | ReportVersionSnapshotV2) -> bytes:
     encoded = json.dumps(
         snapshot.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
     ).encode()
@@ -1163,7 +1273,13 @@ async def list_versions(
 
 
 async def restore_version_to_draft(
-    session: AsyncSession, *, owner_id: UUID, report_id: UUID, version_id: UUID
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    version_id: UUID,
+    expected_draft_id: UUID | None = None,
+    expected_revision: int | None = None,
 ) -> ReportDraft:
     report = await session.scalar(
         select(Report).where(Report.owner_id == owner_id, Report.id == report_id).with_for_update()
@@ -1173,7 +1289,21 @@ async def restore_version_to_draft(
     )
     if report is None or version is None:
         raise ConcurrencyConflict("report version is unavailable")
-    snapshot = ReportVersionSnapshot.model_validate(version.snapshot)
+    if expected_draft_id is not None or expected_revision is not None:
+        if expected_draft_id is None or expected_revision is None:
+            raise ValueError("both expected draft ID and revision are required")
+        current_draft = await session.scalar(
+            select(ReportDraft).where(
+                ReportDraft.owner_id == owner_id,
+                ReportDraft.report_id == report_id,
+                ReportDraft.id == expected_draft_id,
+                ReportDraft.revision == expected_revision,
+                ReportDraft.is_active.is_(True),
+            )
+        )
+        if current_draft is None:
+            raise ConcurrencyConflict("active draft revision is stale")
+    snapshot = parse_report_version_snapshot(version.snapshot)
     await session.execute(
         update(ReportDraft)
         .where(
@@ -1230,6 +1360,32 @@ async def restore_version_to_draft(
         )
         for claim in snapshot.claims
     )
+    if isinstance(snapshot, ReportVersionSnapshotV2):
+        for ordinal, declaration in enumerate(snapshot.charts, start=1):
+            chart = DraftChart(
+                owner_id=owner_id,
+                report_id=report_id,
+                draft_id=draft.id,
+                ordinal=ordinal,
+                chart_type=declaration.chart_type,
+                title=declaration.title,
+                x_label=declaration.x_label,
+                y_label=declaration.y_label,
+                scope=declaration.scope,
+            )
+            session.add(chart)
+            await session.flush()
+            session.add_all(
+                DraftChartMetricReference(
+                    chart_id=chart.id,
+                    ordinal=metric_ordinal,
+                    metric_result_id=metric_id,
+                    owner_id=owner_id,
+                    report_id=report_id,
+                    draft_id=draft.id,
+                )
+                for metric_ordinal, metric_id in enumerate(declaration.metric_result_ids, start=1)
+            )
     await session.flush()
     return draft
 

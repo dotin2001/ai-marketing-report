@@ -17,6 +17,7 @@ from app.db.models import (
     CanonicalRow,
     DatasetCurrency,
     FileAsset,
+    ImportColumnMapping,
     ImportConfiguration,
     ImportConfigurationRevision,
     ImportValidation,
@@ -92,6 +93,18 @@ async def seed_dataset_metric_aggregate(
             revision=1,
             normalization_policy_version="normalize-v1",
         )
+    )
+    await session.flush()
+    session.add_all(
+        ImportColumnMapping(
+            owner_id=owner.id,
+            report_id=report.id,
+            configuration_id=configuration.id,
+            revision=1,
+            source_column_ordinal=ordinal,
+            canonical_field=field,
+        )
+        for ordinal, field in enumerate(("date", "campaign_name", "currency", "clicks"))
     )
     await session.flush()
     validation = ImportValidation(
