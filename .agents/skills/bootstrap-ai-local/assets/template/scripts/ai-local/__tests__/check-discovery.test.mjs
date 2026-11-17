@@ -116,3 +116,30 @@ test("resolves transitive npm scripts into issue-independent execution profiles"
   assert.equal(database.capabilities.postgresql, true);
   assert.doesNotMatch(JSON.stringify(checks), /later-change-92|issueNumber|feature\//);
 });
+
+test("does not treat an excluded PostgreSQL marker as a database requirement", async () => {
+  const repositoryRoot = await mkdtemp(path.join(os.tmpdir(), "ai-local-non-postgres-plan-"));
+  const changeId = "service-free-backend-change";
+  const tasksPath = path.join(repositoryRoot, "openspec", "changes", changeId, "tasks.md");
+  await mkdir(path.dirname(tasksPath), { recursive: true });
+  await writeFile(tasksPath, "- [x] Run `npm run backend:check`.\n");
+  await writeFile(path.join(repositoryRoot, "package.json"), JSON.stringify({ scripts: {
+    "backend:check": "npm run backend:test",
+    "backend:test": "uv --directory backend run pytest -m \"not postgres and not storage_live\"",
+  } }));
+  const configuration = { verification: { executionProfiles: {
+    "npm run backend:check": "backend-test",
+  } } };
+
+  const checks = await discoverVerificationChecks({
+    repositoryRoot,
+    changeId,
+    manifest: { artifactPaths: [tasksPath] },
+    configuration,
+  });
+  const backend = checks.find((entry) => entry.args.join(" ") === "run backend:check");
+
+  assert.equal(backend.executionProfile, "backend-test");
+  assert.equal(backend.capabilities.postgresql, false);
+  assert.deepEqual(backend.resolvedScripts, ["backend:check", "backend:test"]);
+});

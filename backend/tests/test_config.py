@@ -20,6 +20,9 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
     assert settings.database_url.get_secret_value().startswith("postgresql+psycopg://")
     assert settings.redis_url.get_secret_value().startswith("redis://")
     assert settings.s3_use_ssl is False
+    assert settings.source_csv_max_bytes == 10_485_760
+    assert settings.generated_pdf_max_bytes == 26_214_400
+    assert settings.object_storage_timeout_seconds == 10
 
 
 @pytest.mark.parametrize(
@@ -42,6 +45,9 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
         "S3_SECRET_ACCESS_KEY",
         "S3_BUCKET",
         "S3_USE_SSL",
+        "SOURCE_CSV_MAX_BYTES",
+        "GENERATED_PDF_MAX_BYTES",
+        "OBJECT_STORAGE_TIMEOUT_SECONDS",
     ],
 )
 def test_each_required_setting_is_enforced(
@@ -68,6 +74,12 @@ def test_each_required_setting_is_enforced(
         ("REDIS_URL", "http://localhost:6379"),
         ("S3_ENDPOINT_URL", "ftp://localhost:9000"),
         ("S3_USE_SSL", "sometimes"),
+        ("SOURCE_CSV_MAX_BYTES", 0),
+        ("SOURCE_CSV_MAX_BYTES", 1_073_741_825),
+        ("GENERATED_PDF_MAX_BYTES", 0),
+        ("GENERATED_PDF_MAX_BYTES", 1_073_741_825),
+        ("OBJECT_STORAGE_TIMEOUT_SECONDS", 0),
+        ("OBJECT_STORAGE_TIMEOUT_SECONDS", 61),
     ],
 )
 def test_invalid_types_and_url_schemes_are_rejected(

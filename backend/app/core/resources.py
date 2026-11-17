@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import boto3
+from botocore.config import Config
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -51,6 +52,12 @@ def create_resource_clients(settings: Settings) -> ResourceClients:
         aws_access_key_id=settings.s3_access_key_id.get_secret_value(),
         aws_secret_access_key=settings.s3_secret_access_key.get_secret_value(),
         use_ssl=settings.s3_use_ssl,
+        config=Config(
+            connect_timeout=settings.object_storage_timeout_seconds,
+            read_timeout=settings.object_storage_timeout_seconds,
+            retries={"max_attempts": 3, "mode": "standard"},
+            s3={"addressing_style": "path"},
+        ),
     )
     return ResourceClients(
         postgresql=postgresql,

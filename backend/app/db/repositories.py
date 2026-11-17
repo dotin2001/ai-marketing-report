@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from uuid import UUID
@@ -57,6 +58,19 @@ class ConcurrencyConflict(RuntimeError):
 
 class IdempotencyConflict(RuntimeError):
     """A scoped digest was reused for a different semantic command."""
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAssetAggregate:
+    source: ReportSource
+    asset: FileAsset
+
+
+@dataclass(frozen=True, slots=True)
+class PdfAssetAggregate:
+    export: PdfExport
+    version: ReportVersion
+    asset: FileAsset | None
 
 
 def _affected(result: object) -> int:
@@ -232,6 +246,92 @@ async def get_source(
             ReportSource.id == source_id,
         )
     )
+
+
+async def get_source_asset(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    source_id: UUID,
+) -> SourceAssetAggregate | None:
+    row = (
+        await session.execute(
+            select(ReportSource, FileAsset)
+            .join(
+                FileAsset,
+                (FileAsset.id == ReportSource.asset_id)
+                & (FileAsset.owner_id == ReportSource.owner_id)
+                & (FileAsset.report_id == ReportSource.report_id),
+            )
+            .where(
+                ReportSource.owner_id == owner_id,
+                ReportSource.report_id == report_id,
+                ReportSource.id == source_id,
+                ReportSource.source_type == "csv",
+                FileAsset.purpose == "source_csv",
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return SourceAssetAggregate(source=row[0], asset=row[1])
+
+
+def file_asset_metadata_matches(left: FileAsset, right: FileAsset) -> bool:
+    fields = (
+        "owner_id",
+        "report_id",
+        "purpose",
+        "environment",
+        "bucket",
+        "object_key",
+        "safe_filename",
+        "content_type",
+        "byte_size",
+        "checksum_sha256",
+        "version_id",
+        "export_id",
+    )
+    return all(getattr(left, field) == getattr(right, field) for field in fields)
+
+
+async def insert_or_load_csv_binding(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    source: ReportSource,
+    asset: FileAsset,
+) -> SourceAssetAggregate:
+    existing = await get_source_asset(
+        session,
+        owner_id=owner_id,
+        report_id=report_id,
+        source_id=source.id,
+    )
+    if existing is not None:
+        source_matches = (
+            existing.source.checksum_sha256 == source.checksum_sha256
+            and existing.source.byte_size == source.byte_size
+            and existing.source.media_type == source.media_type
+            and existing.source.encoding == source.encoding
+            and existing.source.original_filename == source.original_filename
+            and existing.source.display_filename == source.display_filename
+        )
+        if not source_matches or not file_asset_metadata_matches(existing.asset, asset):
+            raise ConcurrencyConflict("source asset binding conflicts with existing metadata")
+        return existing
+    if source.owner_id != owner_id or source.report_id != report_id:
+        raise ConcurrencyConflict("source asset aggregate is unavailable")
+    await attach_source(
+        session,
+        owner_id=owner_id,
+        report_id=report_id,
+        source=source,
+        asset=asset,
+    )
+    return SourceAssetAggregate(source=source, asset=asset)
 
 
 async def confirm_source_review(
@@ -1234,7 +1334,7 @@ async def finish_pdf_export(
     export_id: UUID,
     expected_attempt_count: int,
     asset: FileAsset,
-) -> None:
+) -> FileAsset:
     async with session.begin_nested():
         export = await session.scalar(
             select(PdfExport)
@@ -1245,11 +1345,7 @@ async def finish_pdf_export(
             )
             .with_for_update()
         )
-        if (
-            export is None
-            or export.state != "running"
-            or export.attempt_count != expected_attempt_count
-        ):
+        if export is None or export.attempt_count != expected_attempt_count:
             raise ConcurrencyConflict("PDF completion state is stale")
         if (
             asset.owner_id != owner_id
@@ -1261,6 +1357,19 @@ async def finish_pdf_export(
             raise ValueError("generated PDF asset binding is invalid")
         asset.version_id = export.version_id
         asset.export_id = export.id
+        if export.state == "succeeded" and export.generated_asset_id is not None:
+            existing = await session.scalar(
+                select(FileAsset).where(
+                    FileAsset.id == export.generated_asset_id,
+                    FileAsset.owner_id == owner_id,
+                    FileAsset.report_id == report_id,
+                )
+            )
+            if existing is None or not file_asset_metadata_matches(existing, asset):
+                raise ConcurrencyConflict("PDF asset binding conflicts with existing metadata")
+            return existing
+        if export.state != "running":
+            raise ConcurrencyConflict("PDF completion state is stale")
         session.add(asset)
         await session.flush()
         now = datetime.now(UTC)
@@ -1280,6 +1389,7 @@ async def finish_pdf_export(
         export.generated_asset_purpose = asset.purpose
         export.updated_at = now
         await session.flush()
+        return asset
 
 
 async def fail_pdf_export(
@@ -1342,6 +1452,42 @@ async def get_pdf_export(
             PdfExport.report_id == report_id,
         )
     )
+
+
+async def get_pdf_asset(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    version_id: UUID,
+    export_id: UUID,
+) -> PdfAssetAggregate | None:
+    row = (
+        await session.execute(
+            select(PdfExport, ReportVersion, FileAsset)
+            .join(
+                ReportVersion,
+                (ReportVersion.id == PdfExport.version_id)
+                & (ReportVersion.owner_id == PdfExport.owner_id)
+                & (ReportVersion.report_id == PdfExport.report_id),
+            )
+            .outerjoin(
+                FileAsset,
+                (FileAsset.id == PdfExport.generated_asset_id)
+                & (FileAsset.owner_id == PdfExport.owner_id)
+                & (FileAsset.report_id == PdfExport.report_id),
+            )
+            .where(
+                PdfExport.owner_id == owner_id,
+                PdfExport.report_id == report_id,
+                PdfExport.version_id == version_id,
+                PdfExport.id == export_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return PdfAssetAggregate(export=row[0], version=row[1], asset=row[2])
 
 
 async def list_pdf_exports(

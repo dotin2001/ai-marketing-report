@@ -13,6 +13,7 @@ from app.main import create_app
 class FakeClients:
     def __init__(self) -> None:
         self.close_calls = 0
+        self.object_storage = object()
 
     async def close(self) -> None:
         self.close_calls += 1

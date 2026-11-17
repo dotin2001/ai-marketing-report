@@ -57,6 +57,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
   "postgres: requires the fail-closed isolated PostgreSQL test database",
+  "storage_live: requires explicitly enabled test-scoped S3-compatible storage",
 ]
 filterwarnings = [
   "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",

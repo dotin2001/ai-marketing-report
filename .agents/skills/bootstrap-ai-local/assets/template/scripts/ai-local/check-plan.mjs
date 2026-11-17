@@ -37,7 +37,8 @@ function expandNpmScript(scriptName, scripts, visiting = new Set()) {
 
 function inferredProfile(check, expansion) {
   const haystack = [commandText(check), ...expansion.names, ...expansion.bodies].join("\n");
-  const postgres = /(?:\bpostgres(?:ql)?\b|\balembic\b|database:|tests\/integration\/db|(?:^|\s)-m\s+postgres\b)/i.test(haystack);
+  const postgresSignals = haystack.replace(/\bnot\s+postgres(?:ql)?\b/gi, "");
+  const postgres = /(?:\bpostgres(?:ql)?\b|\balembic\b|database:|tests\/integration\/db|(?:^|\s)-m\s+postgres\b)/i.test(postgresSignals);
   const backend = postgres || /(?:backend:|--directory\s+backend\b|--prefix\s+backend\b|\bpytest\b|\bruff\b|\bmypy\b)/i.test(haystack);
   return postgres ? "postgresql" : backend ? "backend-test" : "neutral";
 }

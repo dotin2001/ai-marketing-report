@@ -27,11 +27,13 @@ Replace every `CHANGE_ME` value in `infra/.env` and `backend/.env`. Use local-on
 
 The infrastructure process consumes `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `REDIS_PASSWORD`, `REDIS_PORT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `S3_REGION`, `S3_API_PORT`, and `S3_CONSOLE_PORT`.
 
-The backend consumes `APP_ENV`, `APP_HOST`, `APP_PORT`, `HEALTH_CHECK_TIMEOUT_SECONDS`, `LOG_LEVEL`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `REDIS_PASSWORD`, `REDIS_URL`, `S3_ENDPOINT_URL`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, and `S3_USE_SSL`. For local development, `DATABASE_URL` uses `postgresql+psycopg://`, `REDIS_URL` uses `redis://`, `S3_ENDPOINT_URL` is the loopback SeaweedFS S3 URL, and `S3_USE_SSL=false`.
+The backend consumes `APP_ENV`, `APP_HOST`, `APP_PORT`, `HEALTH_CHECK_TIMEOUT_SECONDS`, `LOG_LEVEL`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `REDIS_PASSWORD`, `REDIS_URL`, `S3_ENDPOINT_URL`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `S3_USE_SSL`, `SOURCE_CSV_MAX_BYTES`, `GENERATED_PDF_MAX_BYTES`, and `OBJECT_STORAGE_TIMEOUT_SECONDS`. For local development, `DATABASE_URL` uses `postgresql+psycopg://`, `REDIS_URL` uses `redis://`, `S3_ENDPOINT_URL` is the loopback SeaweedFS S3 URL, and `S3_USE_SSL=false`. The two byte settings are strict positive ceilings for accepted source CSV and generated PDF content; the timeout is a positive, at-most-60-second bound applied to object-storage connect and read operations.
 
 Migration commands read the server-only `MIGRATION_DATABASE_URL`. PostgreSQL integration tests read the server-only `TEST_DATABASE_URL`; it must name a separate database ending in `_test`, use an approved local or CI host, differ from `DATABASE_URL`, and be used only with `APP_ENV=test`. Neither variable is loaded by the web-process `Settings` model or exposed to the frontend.
 
 The frontend consumes only `NEXT_PUBLIC_API_BASE_URL`. Never put a password, access key, database URL, Redis URL, or provider key in a `NEXT_PUBLIC_` variable.
+
+Stored source CSVs and generated PDFs are private objects. Their environment-scoped bucket/key identities remain backend-only and PostgreSQL records the owner, report, purpose, byte size, content type, and SHA-256 binding. A completed PDF is downloaded only through the authenticated `/api/v1/reports/{report_id}/versions/{version_id}/pdf-exports/{export_id}/download` boundary, which verifies the complete object before streaming it with private, no-store response headers. There is no public source-file download or object-list endpoint.
 
 Install locked dependencies:
 
@@ -132,6 +134,23 @@ npm run frontend:check
 
 `npm run backend:check` runs formatting, linting, type checks, configuration tests, and all tests not marked `postgres`. It needs no PostgreSQL, Redis, object-storage, OpenAI, or PDF service. Run `npm run database:check` separately with the approved isolated PostgreSQL test configuration above.
 
+Focused storage checks are available independently:
+
+```sh
+npm run backend:test:storage
+npm run database:test:storage
+```
+
+The first command is deterministic and uses an in-memory fake plus a mocked boto3 client. The second requires only the guarded `_test` PostgreSQL configuration described above; it does not contact S3.
+
+The live SeaweedFS compatibility suite is deliberately opt-in. Select a visibly test-scoped bucket (its name must contain `test`), use test-only credentials, and export `APP_ENV=test`, `RUN_STORAGE_LIVE=1`, `S3_ENDPOINT_URL`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `DATABASE_URL`, `TEST_DATABASE_URL`, and `MIGRATION_DATABASE_URL`. The database variables must satisfy the isolated `_test` rules above. The command starts the declared local stack with its normal configured bucket before running the suite against the separate test bucket:
+
+```sh
+npm run storage:test:live
+```
+
+The suite uses UUID identities below `v1/test/`, records the exact objects it creates, and deletes only an exact metadata match for those keys. When the named test bucket is absent, the fixture creates it and deletes that bucket only after all exact-key cleanup succeeds; a pre-existing bucket is never deleted. It never lists objects for cleanup, empties a bucket, or deletes an unresolved prefix. The suite also proves PostgreSQL metadata persistence, anonymous direct GET/list denial, owner-safe denial, and an authorized byte-exact PDF stream. Do not point it at a shared or production bucket.
+
 The stack check starts and stops the fixed `mkt-rp-assistant` Compose project, verifies the private bucket and persistence over two start cycles, and preserves named volumes:
 
 ```sh
@@ -162,6 +181,7 @@ The next `npm run infra:up` reuses the project-scoped volumes.
 - A port allocation error means another local process owns the selected loopback port. Change the relevant host port in `infra/.env` and its corresponding backend URL.
 - If Docker uses a non-default context, select it before running npm commands, for example `docker context use desktop-linux`, or prefix the command with `DOCKER_CONTEXT=desktop-linux`.
 - If readiness names `postgresql`, `redis`, or `object_storage` as unavailable, inspect only that service with `docker compose -p mkt-rp-assistant --env-file infra/.env -f infra/compose.yaml ps` and `docker compose -p mkt-rp-assistant --env-file infra/.env -f infra/compose.yaml logs SERVICE_NAME`. Logs may contain local operational data; do not publish them without review.
+- A storage timeout, integrity failure, or live-test error should be reported with only its stable category and correlation ID. Never paste credentials, signed requests, bucket names, internal keys, provider response bodies, original filenames, or customer bytes into logs or issue reports.
 - `infra:down` on early Compose v2 releases may require exporting the infra settings into the command environment. The automated live verifiers handle this compatibility case without printing values.
 
 ## Updating dependencies

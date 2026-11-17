@@ -76,6 +76,21 @@ class Settings(BaseSettings):
         validation_alias="S3_BUCKET",
     )
     s3_use_ssl: bool = Field(validation_alias="S3_USE_SSL")
+    source_csv_max_bytes: int = Field(
+        gt=0,
+        le=1_073_741_824,
+        validation_alias="SOURCE_CSV_MAX_BYTES",
+    )
+    generated_pdf_max_bytes: int = Field(
+        gt=0,
+        le=1_073_741_824,
+        validation_alias="GENERATED_PDF_MAX_BYTES",
+    )
+    object_storage_timeout_seconds: float = Field(
+        gt=0,
+        le=60,
+        validation_alias="OBJECT_STORAGE_TIMEOUT_SECONDS",
+    )
 
     @field_validator(
         "app_host",

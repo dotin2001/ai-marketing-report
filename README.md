@@ -18,3 +18,5 @@ The issue always remains open. The automation never switches branches, commits, 
 See [Local AI Planning and Project Synchronization](docs/ai-local-workflow.md) for authentication, configuration, every Todo-to-Done gate, evidence/redaction limits, lock recovery, and troubleshooting.
 
 See [Local development](docs/local-development.md) for the pinned frontend/backend toolchain, environment setup, SeaweedFS dependency stack, health checks, verification commands, ordinary shutdown, and the separately labeled destructive reset.
+
+Object storage is private and backend-authorized: original CSVs and generated PDFs use deterministic owner/report-scoped identities, PostgreSQL retains their integrity metadata, and completed PDFs are fully verified before an authenticated backend stream is returned. The local guide documents the deterministic storage checks, isolated PostgreSQL suite, and separately opted-in SeaweedFS compatibility test with exact-key cleanup.

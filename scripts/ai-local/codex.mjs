@@ -178,13 +178,18 @@ export async function runCodexVerification({
   const output = await createOwnedTemp(runtimePaths, "verification-output", "");
   const schemaPath = path.join(repositoryRoot, "scripts", "ai-local", "schemas", "verification.schema.json");
   const eventLogPath = path.join(runtimePaths.events, `${attemptId}.verification.jsonl`);
+  const requiredManifestIds = manifest.entries.map((entry) => entry.id);
   const prompt = `Perform verification only. Inspect the current repository and the trusted verification input at:
 ${input.filePath}
 
-Progress updates, if any, must use {"schemaVersion":2,"messageType":"progress","message":"..."}.
+Do not emit progress or intermediate assistant messages because the supplied schema accepts only the terminal result.
 Return exactly one terminal structured result for every manifest entry using the supplied JSON schema. Cite concrete file,
 behavior, or actual command-result evidence. Do not invent command results. Do not edit source, tasks,
-specifications, runtime links, or GitHub state; do not clean, commit, push, merge, deploy, or switch branches.`;
+specifications, runtime links, or GitHub state; do not clean, commit, push, merge, deploy, or switch branches.
+
+The results array must contain exactly ${requiredManifestIds.length} entries and must include each required ID below
+exactly once, including every task entry. Check this list against the completed result before returning:
+${JSON.stringify(requiredManifestIds)}`;
   const args = [
     "exec",
     "--cd",

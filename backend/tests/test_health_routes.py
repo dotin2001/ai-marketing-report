@@ -17,6 +17,8 @@ from app.main import create_app
 
 
 class FakeClients:
+    object_storage = object()
+
     async def close(self) -> None:
         return None
 

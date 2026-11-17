@@ -111,6 +111,10 @@ test("verification-only Codex invocation uses schema and validates final output"
   assert.equal(observed.command, "codex");
   assert.ok(observed.args.includes("--output-schema"));
   assert.match(observed.prompt, /verification only/i);
+  assert.match(observed.prompt, /Do not emit progress or intermediate assistant messages/);
+  assert.doesNotMatch(observed.prompt, /Progress updates, if any/);
+  assert.match(observed.prompt, /results array must contain exactly 2 entries/);
+  assert.match(observed.prompt, /\["issue:1","requirement:1"\]/);
   assert.match(observed.prompt, /Do not edit source/);
 });
 
