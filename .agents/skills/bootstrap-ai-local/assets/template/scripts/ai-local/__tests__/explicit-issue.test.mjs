@@ -8,15 +8,15 @@ import {
 } from "../explicit-issue.mjs";
 
 test("parses canonical GitHub issue URLs with an optional trailing slash", () => {
-  const target = parseGitHubIssueUrl("https://github.com/Example-owner/example-repo/issues/2/");
+  const target = parseGitHubIssueUrl("https://github.com/Dotin2001/ai-marketing-report/issues/2/");
   assert.deepEqual(target, {
-    url: "https://github.com/Example-owner/example-repo/issues/2/",
-    repository: "Example-owner/example-repo",
+    url: "https://github.com/Dotin2001/ai-marketing-report/issues/2/",
+    repository: "Dotin2001/ai-marketing-report",
     issueNumber: 2,
   });
-  assert.deepEqual(assertConfiguredRepository(target, "example-owner/example-repo"), {
+  assert.deepEqual(assertConfiguredRepository(target, "dotin2001/ai-marketing-report"), {
     ...target,
-    repository: "example-owner/example-repo",
+    repository: "dotin2001/ai-marketing-report",
   });
   assert.equal(Object.isFrozen(target), true);
 });
@@ -45,11 +45,11 @@ for (const [name, value] of [
 test("rejects a repository other than the configured repository", () => {
   const target = parseGitHubIssueUrl("https://github.com/other/repo/issues/2");
   assert.throws(
-    () => assertConfiguredRepository(target, "example-owner/example-repo"),
+    () => assertConfiguredRepository(target, "dotin2001/ai-marketing-report"),
     (error) =>
       error.code === "invalid_arguments" &&
       error.details.supplied === "other/repo" &&
-      error.details.configured === "example-owner/example-repo",
+      error.details.configured === "dotin2001/ai-marketing-report",
   );
 });
 
@@ -57,29 +57,43 @@ const eligible = Object.freeze({
   projectItemId: "ITEM",
   issueId: "ISSUE",
   issueNumber: 2,
-  repository: "example-owner/example-repo",
+  repository: "dotin2001/ai-marketing-report",
   status: "Todo",
+  statusOptionId: "TODO",
 });
+const project = {
+  todoOption: { id: "TODO", name: "Todo" },
+  inProgressOption: { id: "PROGRESS", name: "In Progress" },
+};
 
 test("resolves exactly one matching eligible Project item", () => {
   const selection = resolveExplicitIssue([eligible], {
-    repository: "EXAMPLE-OWNER/EXAMPLE-REPO",
+    repository: "DOTIN2001/AI-MARKETING-REPORT",
     issueNumber: 2,
-  });
+  }, project);
   assert.equal(selection.kind, "selected");
   assert.equal(selection.item, eligible);
 });
 
 test("rejects an absent or ineligible Project item", () => {
   assert.throws(
-    () => resolveExplicitIssue([], { repository: eligible.repository, issueNumber: 2 }),
+    () => resolveExplicitIssue([], { repository: eligible.repository, issueNumber: 2 }, project),
     (error) => error.code === "explicit_issue_not_eligible",
   );
   assert.throws(
-    () => resolveExplicitIssue([{ ...eligible, status: "In Progress" }], {
+    () => resolveExplicitIssue([{ ...eligible, status: "Done", statusOptionId: "DONE" }], {
       repository: eligible.repository,
       issueNumber: 2,
-    }),
+    }, project),
+    (error) => error.code === "explicit_issue_not_eligible",
+  );
+});
+
+test("accepts exact In Progress retry but rejects an option ID mismatch", () => {
+  const retry = { ...eligible, status: "In Progress", statusOptionId: "PROGRESS" };
+  assert.equal(resolveExplicitIssue([retry], { repository: eligible.repository, issueNumber: 2 }, project).item, retry);
+  assert.throws(
+    () => resolveExplicitIssue([{ ...retry, statusOptionId: "OTHER" }], { repository: eligible.repository, issueNumber: 2 }, project),
     (error) => error.code === "explicit_issue_not_eligible",
   );
 });
@@ -89,7 +103,7 @@ test("rejects duplicate matching Project items", () => {
     () => resolveExplicitIssue([eligible, { ...eligible, projectItemId: "ITEM_2" }], {
       repository: eligible.repository,
       issueNumber: 2,
-    }),
+    }, project),
     (error) => error.code === "explicit_issue_ambiguous",
   );
 });

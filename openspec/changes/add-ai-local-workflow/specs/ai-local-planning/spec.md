@@ -5,7 +5,7 @@ Define a safe local workflow for selecting GitHub Project issues and producing r
 ## ADDED Requirements
 
 ### Requirement: Explicit local workflow configuration
-The workflow SHALL read explicit configuration identifying the target GitHub repository, GitHub Projects v2 owner and project number, and the exact Todo and Done option names. It SHALL verify that the configured repository matches the current repository remote before reading or mutating Project data, and SHALL fail with an actionable message when configuration, authentication, or required local tools are unavailable.
+The workflow SHALL read explicit configuration identifying the target GitHub repository, GitHub Projects v2 owner and project number, and the exact Todo, In Progress, and Done option names. It SHALL verify that the configured repository matches the current repository remote before reading or mutating Project data, and SHALL fail with an actionable message when configuration, authentication, or required local tools are unavailable.
 
 #### Scenario: Valid configuration
 - **WHEN** the user runs `npm run ai:local` in the configured repository with authenticated and available prerequisite tools
@@ -27,7 +27,7 @@ The workflow SHALL discover the configured Project, its Status field, and its si
 - **THEN** the workflow fetches every page and lists only Todo issues belonging to the configured repository
 
 #### Scenario: Status field or option is absent
-- **WHEN** the configured Status field, Todo option, or Done option cannot be uniquely resolved
+- **WHEN** the configured Status field, Todo option, In Progress option, or Done option cannot be uniquely resolved
 - **THEN** the workflow exits before selection with a configuration error and makes no changes
 
 ### Requirement: Interactive issue selection is safe and informative
@@ -80,12 +80,12 @@ The planning workflow SHALL invoke Codex non-interactively with an explicit requ
 
 #### Scenario: Proposal generation or validation fails
 - **WHEN** Codex fails, required artifacts are absent, traceability is invalid, or OpenSpec validation fails
-- **THEN** the workflow reports the failure, does not claim the proposal is ready, and does not update GitHub status
+- **THEN** the workflow reports the failure and does not claim the proposal is ready; an already confirmed URL-targeted In Progress start remains available for retry
 
 ### Requirement: Planning stops for explicit review
-After generating or reusing a proposal, the planning workflow SHALL stop for human review. It SHALL NOT apply implementation tasks, invoke the apply workflow, alter Project status, close the issue, create or switch branches, or commit, push, merge, or deploy code.
+After generating or reusing a proposal, the planning workflow SHALL stop for human review. Interactive planning SHALL leave Project status unchanged; URL-targeted planning SHALL use only the guarded Todo to In Progress transition specified by `ai-local-project-work-start`. Planning SHALL NOT apply implementation tasks, invoke the apply workflow, close the issue, create or switch branches, or commit, push, merge, or deploy code.
 
 #### Scenario: Valid proposal is ready
 - **WHEN** proposal generation and validation complete successfully
-- **THEN** the CLI explains how to review the artifacts and manually invoke `$openspec-apply-change <change-id>` in Codex, then exits without implementation or GitHub mutation
+- **THEN** the CLI explains how to review the artifacts and manually invoke `$openspec-apply-change <change-id>` in Codex, then exits without implementation or another GitHub mutation
 

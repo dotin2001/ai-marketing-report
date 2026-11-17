@@ -59,27 +59,41 @@ const eligible = Object.freeze({
   issueNumber: 2,
   repository: "dotin2001/ai-marketing-report",
   status: "Todo",
+  statusOptionId: "TODO",
 });
+const project = {
+  todoOption: { id: "TODO", name: "Todo" },
+  inProgressOption: { id: "PROGRESS", name: "In Progress" },
+};
 
 test("resolves exactly one matching eligible Project item", () => {
   const selection = resolveExplicitIssue([eligible], {
     repository: "DOTIN2001/AI-MARKETING-REPORT",
     issueNumber: 2,
-  });
+  }, project);
   assert.equal(selection.kind, "selected");
   assert.equal(selection.item, eligible);
 });
 
 test("rejects an absent or ineligible Project item", () => {
   assert.throws(
-    () => resolveExplicitIssue([], { repository: eligible.repository, issueNumber: 2 }),
+    () => resolveExplicitIssue([], { repository: eligible.repository, issueNumber: 2 }, project),
     (error) => error.code === "explicit_issue_not_eligible",
   );
   assert.throws(
-    () => resolveExplicitIssue([{ ...eligible, status: "In Progress" }], {
+    () => resolveExplicitIssue([{ ...eligible, status: "Done", statusOptionId: "DONE" }], {
       repository: eligible.repository,
       issueNumber: 2,
-    }),
+    }, project),
+    (error) => error.code === "explicit_issue_not_eligible",
+  );
+});
+
+test("accepts exact In Progress retry but rejects an option ID mismatch", () => {
+  const retry = { ...eligible, status: "In Progress", statusOptionId: "PROGRESS" };
+  assert.equal(resolveExplicitIssue([retry], { repository: eligible.repository, issueNumber: 2 }, project).item, retry);
+  assert.throws(
+    () => resolveExplicitIssue([{ ...retry, statusOptionId: "OTHER" }], { repository: eligible.repository, issueNumber: 2 }, project),
     (error) => error.code === "explicit_issue_not_eligible",
   );
 });
@@ -89,7 +103,7 @@ test("rejects duplicate matching Project items", () => {
     () => resolveExplicitIssue([eligible, { ...eligible, projectItemId: "ITEM_2" }], {
       repository: eligible.repository,
       issueNumber: 2,
-    }),
+    }, project),
     (error) => error.code === "explicit_issue_ambiguous",
   );
 });

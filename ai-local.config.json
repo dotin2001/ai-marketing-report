@@ -5,6 +5,7 @@
     "projectNumber": 2,
     "statusField": "Status",
     "todoOption": "Todo",
+    "inProgressOption": "In Progress",
     "doneOption": "Done"
   },
   "runtimeDirectory": ".ai-local",

@@ -13,7 +13,7 @@ test("documented workflow commands match CLI help and referenced files exist", a
     readFile(path.join(repositoryRoot, "ai-local.config.json"), "utf8"),
   ]);
   const packageManager = JSON.parse(configText).packageManager;
-  const { todoOption } = JSON.parse(configText).github;
+  const { todoOption, inProgressOption } = JSON.parse(configText).github;
   const run = `${packageManager} run ai:local`;
   for (const command of [
     run,
@@ -24,10 +24,11 @@ test("documented workflow commands match CLI help and referenced files exist", a
   ]) {
     assert.match(guide, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(HELP_TEXT, /node scripts\/ai-local\.mjs --sync-task \[--change <change-id>\]/);
-  assert.match(HELP_TEXT, /node scripts\/ai-local\.mjs --issue <github-issue-url>/);
+  assert.match(HELP_TEXT, /npm run ai:local -- --sync-task \[--change <change-id>\]/);
+  assert.match(HELP_TEXT, /npm run ai:local -- --issue <github-issue-url>/);
   assert.match(guide, new RegExp(`standalone .--. tells ${packageManager} to forward`));
-  assert.match(guide, new RegExp(`exact .${todoOption}. option`));
+  assert.match(guide, new RegExp(`exact .${todoOption}. or .${inProgressOption}. status`));
+  assert.match(HELP_TEXT, /Move an eligible Todo issue to In Progress/);
   assert.match(guide, /duplicate-link detection/);
   assert.match(guide, /\$openspec-apply-change <change-id>/);
   assert.match(guide, /issue remains open/i);

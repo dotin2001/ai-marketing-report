@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fetchEligibleItems } from "../project.mjs";
+import { fetchEligibleItems, fetchProjectIssues } from "../project.mjs";
 
 const config = {
   github: {
     repository: "dotin2001/ai-marketing-report",
     statusField: "Status",
     todoOption: "Todo",
+    inProgressOption: "In Progress",
   },
 };
-const project = { id: "PROJECT", todoOption: { id: "TODO" } };
+const project = { id: "PROJECT", todoOption: { id: "TODO", name: "Todo" }, inProgressOption: { id: "PROGRESS", name: "In Progress" } };
 
 function item(overrides = {}) {
   return {
@@ -80,4 +81,6 @@ test("fetches every page and retains only exact eligible Todo issues", async () 
   );
   assert.equal(eligible[1].issueNumber, 2);
   assert.equal(eligible[1].repository, "dotin2001/ai-marketing-report");
+  const projectIssues = await fetchProjectIssues(client, project, config);
+  assert.deepEqual(projectIssues.map((entry) => entry.projectItemId), ["ITEM-1", "NO-STATUS", "DONE", "CASE", "ITEM-2"]);
 });

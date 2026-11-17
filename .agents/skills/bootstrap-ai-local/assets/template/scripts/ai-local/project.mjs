@@ -99,6 +99,11 @@ export async function resolveProject(client, config) {
     "todo_option_resolution_failed",
     `Todo option ${config.github.todoOption}`,
   );
+  const inProgressOption = requireExactlyOne(
+    statusField.options.filter((option) => option.name === config.github.inProgressOption),
+    "in_progress_option_resolution_failed",
+    `In Progress option ${config.github.inProgressOption}`,
+  );
   const doneOption = requireExactlyOne(
     statusField.options.filter((option) => option.name === config.github.doneOption),
     "done_option_resolution_failed",
@@ -109,11 +114,12 @@ export async function resolveProject(client, config) {
     ...project,
     statusField: Object.freeze({ id: statusField.id, name: statusField.name }),
     todoOption: Object.freeze({ id: todoOption.id, name: todoOption.name }),
+    inProgressOption: Object.freeze({ id: inProgressOption.id, name: inProgressOption.name }),
     doneOption: Object.freeze({ id: doneOption.id, name: doneOption.name }),
   });
 }
 
-export async function fetchEligibleItems(client, project, config) {
+export async function fetchProjectIssues(client, project, config) {
   const items = await client.paginate({
     query: ITEMS_QUERY,
     variables: {
@@ -128,8 +134,6 @@ export async function fetchEligibleItems(client, project, config) {
       const content = item?.content;
       return (
         typeof item?.id === "string" &&
-        item.status?.name === config.github.todoOption &&
-        item.status?.optionId === project.todoOption.id &&
         content?.__typename === "Issue" &&
         content.repository?.nameWithOwner === config.github.repository &&
         content.repository?.isFork === false
@@ -139,8 +143,8 @@ export async function fetchEligibleItems(client, project, config) {
       Object.freeze({
         projectItemId: item.id,
         projectItemUpdatedAt: item.updatedAt,
-        status: item.status.name,
-        statusOptionId: item.status.optionId,
+        status: item.status?.name ?? null,
+        statusOptionId: item.status?.optionId ?? null,
         issueId: item.content.id,
         issueNumber: item.content.number,
         title: item.content.title,
@@ -150,6 +154,13 @@ export async function fetchEligibleItems(client, project, config) {
         repository: item.content.repository.nameWithOwner,
       }),
     );
+}
+
+export async function fetchEligibleItems(client, project, config) {
+  const items = await fetchProjectIssues(client, project, config);
+  return items.filter((item) =>
+    item.status === config.github.todoOption && item.statusOptionId === project.todoOption.id,
+  );
 }
 
 export const projectQueries = Object.freeze({ owner: OWNER_QUERY, fields: FIELDS_QUERY, items: ITEMS_QUERY });

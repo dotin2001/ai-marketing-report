@@ -61,6 +61,7 @@ try {
     "--project-number", "9",
     "--status-field", "Workflow",
     "--todo-option", "Ready",
+    "--in-progress-option", "Active",
     "--done-option", "Complete",
     "--package-manager", "npm",
     "--verification-command", JSON.stringify(["npm", "test"]),
@@ -76,6 +77,7 @@ try {
   assert.equal(config.github.repository, "example-org/disposable-repository");
   assert.equal(config.github.statusField, "Workflow");
   assert.equal(config.github.todoOption, "Ready");
+  assert.equal(config.github.inProgressOption, "Active");
   assert.equal(config.github.doneOption, "Complete");
   assert.deepEqual(config.verification.commands[0].args, ["test"]);
 

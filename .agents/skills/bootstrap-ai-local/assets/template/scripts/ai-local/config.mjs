@@ -138,9 +138,10 @@ export function validateConfiguration(value, repositoryRoot) {
 
   const statusField = requireNonEmptyString(github.statusField, "github.statusField");
   const todoOption = requireNonEmptyString(github.todoOption, "github.todoOption");
+  const inProgressOption = requireNonEmptyString(github.inProgressOption, "github.inProgressOption");
   const doneOption = requireNonEmptyString(github.doneOption, "github.doneOption");
-  if (todoOption === doneOption) {
-    throw new ConfigurationError("Todo and Done option names must be different.");
+  if (new Set([todoOption, inProgressOption, doneOption]).size !== 3) {
+    throw new ConfigurationError("Todo, In Progress, and Done option names must be different.");
   }
 
   const packageManager = value.packageManager ?? "npm";
@@ -172,6 +173,7 @@ export function validateConfiguration(value, repositoryRoot) {
       projectNumber: github.projectNumber,
       statusField,
       todoOption,
+      inProgressOption,
       doneOption,
     }),
     repositoryRoot,

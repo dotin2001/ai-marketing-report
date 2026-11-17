@@ -5,10 +5,11 @@ import { resolveProject } from "../project.mjs";
 
 const config = {
   github: {
-    projectOwner: "example-owner",
+    projectOwner: "dotin2001",
     projectNumber: 2,
     statusField: "Status",
     todoOption: "Todo",
+    inProgressOption: "In Progress",
     doneOption: "Done",
   },
 };
@@ -17,12 +18,12 @@ function clientFixture({ ownerType = "user", fields } = {}) {
   const project = { id: "PROJECT_DYNAMIC", number: 2, title: "AI marketing" };
   return {
     graphql: async (_query, variables) => {
-      assert.equal(variables.login, "example-owner");
+      assert.equal(variables.login, "dotin2001");
       assert.equal(variables.number, 2);
       return {
         repositoryOwner: {
           __typename: ownerType === "user" ? "User" : "Organization",
-          login: "example-owner",
+          login: "dotin2001",
           projectV2: project,
         },
       };
@@ -38,6 +39,7 @@ function clientFixture({ ownerType = "user", fields } = {}) {
             name: "Status",
             options: [
               { id: "TODO_DYNAMIC", name: "Todo" },
+              { id: "PROGRESS_DYNAMIC", name: "In Progress" },
               { id: "DONE_DYNAMIC", name: "Done" },
             ],
           },
@@ -54,6 +56,7 @@ for (const ownerType of ["user", "organization"]) {
     assert.equal(project.id, "PROJECT_DYNAMIC");
     assert.equal(project.statusField.id, "STATUS_DYNAMIC");
     assert.equal(project.todoOption.id, "TODO_DYNAMIC");
+    assert.equal(project.inProgressOption.id, "PROGRESS_DYNAMIC");
     assert.equal(project.doneOption.id, "DONE_DYNAMIC");
   });
 }
@@ -80,6 +83,19 @@ for (const [name, fields, code] of [
     "todo_option_resolution_failed",
   ],
   [
+    "absent In Progress",
+    [{ __typename: "ProjectV2SingleSelectField", id: "1", name: "Status", options: [{ id: "t", name: "Todo" }, { id: "d", name: "Done" }] }],
+    "in_progress_option_resolution_failed",
+  ],
+  [
+    "duplicate In Progress",
+    [{ __typename: "ProjectV2SingleSelectField", id: "1", name: "Status", options: [
+      { id: "t", name: "Todo" }, { id: "p1", name: "In Progress" },
+      { id: "p2", name: "In Progress" }, { id: "d", name: "Done" },
+    ] }],
+    "in_progress_option_resolution_failed",
+  ],
+  [
     "case-mismatched Done",
     [
       {
@@ -88,6 +104,7 @@ for (const [name, fields, code] of [
         name: "Status",
         options: [
           { id: "t", name: "Todo" },
+          { id: "p", name: "In Progress" },
           { id: "d", name: "done" },
         ],
       },

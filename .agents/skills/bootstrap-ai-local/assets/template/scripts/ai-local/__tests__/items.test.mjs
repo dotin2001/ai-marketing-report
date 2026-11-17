@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fetchEligibleItems } from "../project.mjs";
+import { fetchEligibleItems, fetchProjectIssues } from "../project.mjs";
 
 const config = {
   github: {
-    repository: "example-owner/example-repo",
+    repository: "dotin2001/ai-marketing-report",
     statusField: "Status",
     todoOption: "Todo",
+    inProgressOption: "In Progress",
   },
 };
-const project = { id: "PROJECT", todoOption: { id: "TODO" } };
+const project = { id: "PROJECT", todoOption: { id: "TODO", name: "Todo" }, inProgressOption: { id: "PROGRESS", name: "In Progress" } };
 
 function item(overrides = {}) {
   return {
@@ -22,11 +23,11 @@ function item(overrides = {}) {
       id: "ISSUE-1",
       number: 1,
       title: "Eligible",
-      url: "https://github.com/example-owner/example-repo/issues/1",
+      url: "https://github.com/dotin2001/ai-marketing-report/issues/1",
       updatedAt: "2026-01-01T00:00:00Z",
       repository: {
         id: "REPOSITORY",
-        nameWithOwner: "example-owner/example-repo",
+        nameWithOwner: "dotin2001/ai-marketing-report",
         isFork: false,
       },
     },
@@ -49,7 +50,7 @@ test("fetches every page and retains only exact eligible Todo issues", async () 
       id: "OTHER-REPO",
       content: {
         ...item().content,
-        repository: { ...item().content.repository, nameWithOwner: "example-owner/other" },
+        repository: { ...item().content.repository, nameWithOwner: "dotin2001/other" },
       },
     }),
     item({
@@ -79,5 +80,7 @@ test("fetches every page and retains only exact eligible Todo issues", async () 
     ["ITEM-1", "ITEM-2"],
   );
   assert.equal(eligible[1].issueNumber, 2);
-  assert.equal(eligible[1].repository, "example-owner/example-repo");
+  assert.equal(eligible[1].repository, "dotin2001/ai-marketing-report");
+  const projectIssues = await fetchProjectIssues(client, project, config);
+  assert.deepEqual(projectIssues.map((entry) => entry.projectItemId), ["ITEM-1", "NO-STATUS", "DONE", "CASE", "ITEM-2"]);
 });

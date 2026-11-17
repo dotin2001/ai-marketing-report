@@ -34,6 +34,7 @@ Required settings for preview/apply:
 Optional settings:
   --status-field <name>             Default: Status
   --todo-option <name>              Default: Todo
+  --in-progress-option <name>       Default: In Progress
   --done-option <name>              Default: Done
   --package-manager <name>          npm, pnpm, yarn, or bun; otherwise detected
   --verification-command <json>     Repeatable argv JSON, e.g. '["npm","test"]'
@@ -54,6 +55,7 @@ function parseArguments(args) {
     target: null,
     statusField: "Status",
     todoOption: "Todo",
+    inProgressOption: "In Progress",
     doneOption: "Done",
     autoDiscover: true,
     verificationCommands: [],
@@ -75,6 +77,7 @@ function parseArguments(args) {
       "--project-number": "projectNumber",
       "--status-field": "statusField",
       "--todo-option": "todoOption",
+      "--in-progress-option": "inProgressOption",
       "--done-option": "doneOption",
       "--package-manager": "packageManager",
     };
@@ -118,10 +121,12 @@ function parseArguments(args) {
     if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(options.projectOwner)) {
       fail("--project-owner is malformed.");
     }
-    for (const field of ["statusField", "todoOption", "doneOption"]) {
+    for (const field of ["statusField", "todoOption", "inProgressOption", "doneOption"]) {
       if (!options[field] || options[field].trim() !== options[field]) fail(`${field} must be an exact non-empty name.`);
     }
-    if (options.todoOption === options.doneOption) fail("Todo and Done option names must differ.");
+    if (new Set([options.todoOption, options.inProgressOption, options.doneOption]).size !== 3) {
+      fail("Todo, In Progress, and Done option names must differ.");
+    }
   }
   return options;
 }
@@ -295,6 +300,7 @@ function previewInvocation(settings) {
     "--project-number", String(settings.projectNumber),
     "--status-field", shellQuote(settings.statusField),
     "--todo-option", shellQuote(settings.todoOption),
+    "--in-progress-option", shellQuote(settings.inProgressOption),
     "--done-option", shellQuote(settings.doneOption),
     "--package-manager", settings.packageManager,
   ];
@@ -313,6 +319,7 @@ function replacements(settings) {
     "{{PROJECT_NUMBER}}": String(settings.projectNumber),
     "{{STATUS_FIELD}}": settings.statusField,
     "{{TODO_OPTION}}": settings.todoOption,
+    "{{IN_PROGRESS_OPTION}}": settings.inProgressOption,
     "{{DONE_OPTION}}": settings.doneOption,
     "{{PACKAGE_MANAGER}}": settings.packageManager,
     "{{RUN_COMMAND}}": run,
@@ -335,6 +342,7 @@ function configuration(settings) {
       projectNumber: settings.projectNumber,
       statusField: settings.statusField,
       todoOption: settings.todoOption,
+      inProgressOption: settings.inProgressOption,
       doneOption: settings.doneOption,
     },
     packageManager: settings.packageManager,
@@ -445,6 +453,7 @@ export async function run(args = process.argv.slice(2)) {
       projectNumber: settings.projectNumber,
       statusField: settings.statusField,
       todoOption: settings.todoOption,
+      inProgressOption: settings.inProgressOption,
       doneOption: settings.doneOption,
       packageManager: settings.packageManager,
       autoDiscover: settings.autoDiscover,

@@ -1,6 +1,6 @@
 # Local AI Planning and Project Synchronization
 
-This repository uses a local, fail-closed workflow that turns one eligible GitHub Projects v2 `{{TODO_OPTION}}` issue into a reviewed OpenSpec proposal and, after explicit implementation plus independent verification, changes only that Project item to `{{DONE_OPTION}}`.
+This repository uses a local, fail-closed workflow that turns one eligible GitHub Projects v2 `{{TODO_OPTION}}` issue into a reviewed OpenSpec proposal. URL-targeted planning confirms `{{IN_PROGRESS_OPTION}}` before proposal generation. After explicit implementation plus independent verification, synchronization changes only that Project item to `{{DONE_OPTION}}`.
 
 ## Configuration and prerequisites
 
@@ -12,7 +12,7 @@ gh auth refresh -h github.com -s repo,read:project,project
 gh auth status
 ```
 
-The configured repository is `{{REPOSITORY}}`, Project owner/number is `{{PROJECT_OWNER}}#{{PROJECT_NUMBER}}`, status field is `{{STATUS_FIELD}}`, and exact transition options are `{{TODO_OPTION}}` to `{{DONE_OPTION}}`. Required verification commands are explicit argv arrays under `verification.commands`; trusted package scripts and repository instructions are also discovered when `verification.autoDiscover` is true. Each ambiguous command can receive a `neutral`, `backend-test`, or `postgresql` profile through trusted configuration.
+The configured repository is `{{REPOSITORY}}`, Project owner/number is `{{PROJECT_OWNER}}#{{PROJECT_NUMBER}}`, status field is `{{STATUS_FIELD}}`, and exact transition options are `{{TODO_OPTION}}`, `{{IN_PROGRESS_OPTION}}`, and `{{DONE_OPTION}}`. Required verification commands are explicit argv arrays under `verification.commands`; trusted package scripts and repository instructions are also discovered when `verification.autoDiscover` is true. Each ambiguous command can receive a `neutral`, `backend-test`, or `postgresql` profile through trusted configuration.
 
 ## Preview and scaffold
 
@@ -50,9 +50,9 @@ Show CLI help through the package script:
 {{RUN_COMMAND}} -- --help
 ```
 
-The standalone `--` tells {{PACKAGE_MANAGER}} to forward the runner option. The URL must be `https://github.com/<owner>/<repository>/issues/<positive-number>` with no credentials, port, query, or fragment, and it must match the configured repository. The issue must resolve to exactly one configured-Project item in the exact `{{TODO_OPTION}}` option.
+The standalone `--` tells {{PACKAGE_MANAGER}} to forward the runner option. The URL must be `https://github.com/<owner>/<repository>/issues/<positive-number>` with no credentials, port, query, or fragment, and it must match the configured repository. The issue must resolve to exactly one configured-Project item in exact `{{TODO_OPTION}}` or `{{IN_PROGRESS_OPTION}}` status.
 
-Both planning paths fetch the issue and paginated comments as untrusted data, retain duplicate-link detection, invoke the literal `$openspec-propose` skill, independently validate the artifacts and traceability, and stop. They never implement, apply, close the issue, change Project status, switch branches, commit, push, merge, or deploy.
+Both planning paths fetch the issue and paginated comments as untrusted data, retain duplicate-link detection, invoke the literal `$openspec-propose` skill, independently validate the artifacts and traceability, and stop for review. The URL-targeted path moves one eligible `{{TODO_OPTION}}` item to `{{IN_PROGRESS_OPTION}}` before proposal generation; a retry already in progress skips the write, and a failed update stops proposal generation. A cancelled linked-change reuse leaves status unchanged. Interactive planning leaves status untouched. Neither path implements, applies, closes the issue, switches branches, commits, pushes, merges, or deploys.
 
 ## Apply explicitly
 
@@ -110,7 +110,7 @@ Or select one change explicitly:
 {{RUN_COMMAND}} -- --sync-task --change <change-id>
 ```
 
-Only after tasks, acceptance criteria, required commands, semantic evidence, fingerprints, and final live identity/status checks all pass can the guarded mutation set the selected item's `{{STATUS_FIELD}}` field from exact `{{TODO_OPTION}}` to exact `{{DONE_OPTION}}`. The issue remains open.
+Only after tasks, acceptance criteria, required commands, semantic evidence, fingerprints, and final live identity/status checks all pass can the guarded mutation set the selected item's `{{STATUS_FIELD}}` field from exact `{{TODO_OPTION}}` or `{{IN_PROGRESS_OPTION}}` to exact `{{DONE_OPTION}}`. The issue remains open.
 
 Runtime links, evidence, bounded redacted events, locks, and temporary files stay under ignored `.ai-local/`. If GitHub synchronization fails after passing verification, retrying may reuse evidence only when every identity and fingerprint still matches.
 

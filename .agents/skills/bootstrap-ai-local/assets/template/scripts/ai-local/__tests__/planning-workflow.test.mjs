@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { main } from "../cli.mjs";
+import { GitHubError } from "../errors.mjs";
 import { ensureRuntimeLayout } from "../runtime.mjs";
 import { runPlanningWorkflow } from "../workflow.mjs";
 
@@ -23,6 +24,7 @@ test("planning journey validates and links a proposal, then stops for review", a
       projectNumber: 2,
       statusField: "Status",
       todoOption: "Todo",
+      inProgressOption: "In Progress",
       doneOption: "Done",
     },
   };
@@ -96,11 +98,12 @@ async function explicitPlanningFixture({ items } = {}) {
     repositoryRoot,
     runtimePath,
     github: {
-      repository: "example-owner/example-repo",
-      projectOwner: "example-owner",
+      repository: "dotin2001/ai-marketing-report",
+      projectOwner: "dotin2001",
       projectNumber: 2,
       statusField: "Status",
       todoOption: "Todo",
+      inProgressOption: "In Progress",
       doneOption: "Done",
     },
   };
@@ -109,10 +112,11 @@ async function explicitPlanningFixture({ items } = {}) {
     issueId: "ISSUE_2",
     issueNumber: 2,
     title: "Explicit planning",
-    url: "https://github.com/example-owner/example-repo/issues/2",
+    url: "https://github.com/dotin2001/ai-marketing-report/issues/2",
     repositoryId: "REPO",
     repository: config.github.repository,
     status: "Todo",
+    statusOptionId: "TODO",
   };
   const issue = {
     id: item.issueId,
@@ -139,11 +143,15 @@ async function explicitPlanningFixture({ items } = {}) {
     githubClient: {},
     resolveProject: async () => {
       calls.push("project");
-      return { id: "PROJECT", todoOption: { id: "TODO" } };
+      return { id: "PROJECT", todoOption: { id: "TODO", name: "Todo" }, inProgressOption: { id: "PROGRESS", name: "In Progress" } };
     },
-    fetchEligibleItems: async () => {
+    fetchProjectIssues: async () => {
       calls.push("items");
       return items ?? [item];
+    },
+    startProjectWork: async () => {
+      calls.push("start");
+      return { kind: "started" };
     },
     selectIssue: async () => {
       calls.push("selector");
@@ -191,23 +199,23 @@ async function explicitPlanningFixture({ items } = {}) {
 test("explicit issue CLI journey skips selection and preserves the safe proposal pipeline", async () => {
   const fixture = await explicitPlanningFixture();
   const result = await main(
-    ["--issue", "https://github.com/example-owner/example-repo/issues/2"],
+    ["--issue", "https://github.com/dotin2001/ai-marketing-report/issues/2"],
     fixture.dependencies,
   );
 
   assert.equal(result.kind, "proposal_ready");
   assert.equal(result.changeId, "gh-2-explicit-planning");
-  assert.deepEqual(fixture.calls, ["preflight", "project", "items", "issue", "link-scan", "codex", "validate"]);
+  assert.deepEqual(fixture.calls, ["preflight", "project", "items", "issue", "link-scan", "start", "codex", "validate"]);
   assert.equal(fixture.calls.includes("selector"), false);
   assert.match(fixture.capturedPrompt(), /\$openspec-propose/);
   assert.doesNotMatch(fixture.capturedPrompt(), /\$openspec-apply-change/);
   assert.match(fixture.output(), /manually invoke \$openspec-apply-change gh-2-explicit-planning/);
-  assert.match(fixture.output(), /No implementation or GitHub state change/);
+  assert.match(fixture.output(), /Project item is In Progress/);
 
   const link = JSON.parse(await readFile(result.recordPath, "utf8"));
   assert.equal(link.traceability.projectItemId, fixture.item.projectItemId);
   assert.equal(link.traceability.issueId, fixture.issue.id);
-  for (const prohibited of ["selector", "apply", "mutation", "close", "checkout", "switch", "commit", "push", "merge", "deploy"]) {
+  for (const prohibited of ["selector", "apply", "close", "checkout", "switch", "commit", "push", "merge", "deploy"]) {
     assert.equal(fixture.calls.includes(prohibited), false);
   }
 });
@@ -223,6 +231,78 @@ test("cross-repository explicit URL stops before preflight or GitHub access", as
   assert.match(fixture.errorOutput(), /does not match configured repository/);
 });
 
+test("an already In Progress explicit issue resumes without another status write", async () => {
+  const fixture = await explicitPlanningFixture();
+  fixture.dependencies.fetchProjectIssues = async () => {
+    fixture.calls.push("items");
+    return [{ ...fixture.item, status: "In Progress", statusOptionId: "PROGRESS" }];
+  };
+  fixture.dependencies.startProjectWork = async () => {
+    fixture.calls.push("start-read-only");
+    return { kind: "already_in_progress" };
+  };
+  const result = await main(["--issue", fixture.item.url], fixture.dependencies);
+  assert.equal(result.kind, "proposal_ready");
+  assert.deepEqual(fixture.calls.slice(0, 7), ["preflight", "project", "items", "issue", "link-scan", "start-read-only", "codex"]);
+});
+
+test("declining linked reuse makes no status write or proposal", async () => {
+  const fixture = await explicitPlanningFixture();
+  fixture.dependencies.resolveLinkedChange = async () => {
+    fixture.calls.push("link-scan");
+    return { kind: "reuse", changeId: "existing", traceability: {
+      projectId: "PROJECT", projectItemId: fixture.item.projectItemId,
+      issueId: fixture.issue.id, repositoryId: fixture.issue.repository.id,
+    } };
+  };
+  fixture.dependencies.confirmReuse = async () => false;
+  const result = await main(["--issue", fixture.item.url], fixture.dependencies);
+  assert.equal(result.kind, "cancelled");
+  assert.deepEqual(fixture.calls, ["preflight", "project", "items", "issue", "link-scan"]);
+});
+
+test("accepted linked reuse confirms start before reporting proposal ready", async () => {
+  const fixture = await explicitPlanningFixture();
+  fixture.dependencies.resolveLinkedChange = async () => {
+    fixture.calls.push("link-scan");
+    return { kind: "reuse", changeId: "existing", traceability: {
+      projectId: "PROJECT", projectItemId: fixture.item.projectItemId,
+      issueId: fixture.issue.id, repositoryId: fixture.issue.repository.id,
+    } };
+  };
+  fixture.dependencies.confirmReuse = async () => true;
+  const result = await main(["--issue", fixture.item.url], fixture.dependencies);
+  assert.equal(result.kind, "proposal_ready");
+  assert.equal(result.reused, true);
+  assert.deepEqual(fixture.calls, ["preflight", "project", "items", "issue", "link-scan", "start", "validate"]);
+});
+
+test("linked change for a different Project item fails before status change", async () => {
+  const fixture = await explicitPlanningFixture();
+  fixture.dependencies.resolveLinkedChange = async () => {
+    fixture.calls.push("link-scan");
+    return { kind: "reuse", changeId: "existing", traceability: {
+      projectId: "PROJECT", projectItemId: "DIFFERENT",
+      issueId: fixture.issue.id, repositoryId: fixture.issue.repository.id,
+    } };
+  };
+  const result = await main(["--issue", fixture.item.url], fixture.dependencies);
+  assert.equal(result.code, "link_disagreement");
+  assert.deepEqual(fixture.calls, ["preflight", "project", "items", "issue", "link-scan"]);
+});
+
+test("required start failure stops before Codex and link persistence", async () => {
+  const fixture = await explicitPlanningFixture();
+  fixture.dependencies.startProjectWork = async () => {
+    fixture.calls.push("start");
+    throw new GitHubError("work_start_mutation_failed", "GitHub denied the update; retry the command.");
+  };
+  const result = await main(["--issue", fixture.item.url], fixture.dependencies);
+  assert.equal(result.code, "work_start_mutation_failed");
+  assert.match(fixture.errorOutput(), /retry the command/);
+  assert.deepEqual(fixture.calls, ["preflight", "project", "items", "issue", "link-scan", "start"]);
+});
+
 for (const [name, items, code] of [
   ["ineligible", [], "explicit_issue_not_eligible"],
   [
@@ -232,15 +312,17 @@ for (const [name, items, code] of [
         projectItemId: "ITEM_2",
         issueId: "ISSUE_2",
         issueNumber: 2,
-        repository: "example-owner/example-repo",
+        repository: "dotin2001/ai-marketing-report",
         status: "Todo",
+        statusOptionId: "TODO",
       },
       {
         projectItemId: "ITEM_2_DUPLICATE",
         issueId: "ISSUE_2",
         issueNumber: 2,
-        repository: "example-owner/example-repo",
+        repository: "dotin2001/ai-marketing-report",
         status: "Todo",
+        statusOptionId: "TODO",
       },
     ],
     "explicit_issue_ambiguous",
@@ -249,7 +331,7 @@ for (const [name, items, code] of [
   test(`${name} explicit Project resolution stops before issue loading or Codex`, async () => {
     const fixture = await explicitPlanningFixture({ items });
     const result = await main(
-      ["--issue", "https://github.com/example-owner/example-repo/issues/2"],
+      ["--issue", "https://github.com/dotin2001/ai-marketing-report/issues/2"],
       fixture.dependencies,
     );
     assert.equal(result.code, code);

@@ -35,14 +35,14 @@ The workflow SHALL accept only an HTTPS `github.com` issue URL whose path identi
 - **THEN** the workflow reports both configured and supplied repository identities and stops before proposal generation or GitHub mutation
 
 ### Requirement: Explicit issue resolves through the configured Todo Project boundary
-After normal preflight and dynamic Project discovery, the workflow SHALL resolve the supplied repository and issue number to exactly one eligible item from the complete configured Project enumeration. The item SHALL be an Issue in the configured repository with status exactly the configured Todo option. The workflow SHALL not plan a URL that is absent from the Project, linked to non-issue content, in another status, or otherwise ineligible.
+After normal preflight and dynamic Project discovery, the workflow SHALL resolve the supplied repository and issue number to exactly one eligible item from the complete configured Project enumeration. The item SHALL be an Issue in the configured repository with status exactly the configured Todo option for a new start or exactly In Progress for an eligible retry. The workflow SHALL not plan a URL that is absent from the Project, linked to non-issue content, in another status, or otherwise ineligible.
 
 #### Scenario: One matching Todo item exists
 - **WHEN** complete Project enumeration contains exactly one eligible Todo issue matching the supplied repository and issue number
 - **THEN** the workflow selects that Project item without displaying the numbered issue selector
 
 #### Scenario: Matching issue is not eligible
-- **WHEN** no eligible item matches because the issue is absent, deleted, not an Issue, belongs to another repository, lacks the configured status, or is not exactly Todo
+- **WHEN** no eligible item matches because the issue is absent, deleted, not an Issue, belongs to another repository, lacks the configured status, or is neither exactly Todo nor In Progress
 - **THEN** the workflow reports that the explicit issue is not eligible and creates no proposal or runtime link
 
 #### Scenario: Matching item is ambiguous
@@ -50,7 +50,7 @@ After normal preflight and dynamic Project discovery, the workflow SHALL resolve
 - **THEN** the workflow reports an identity conflict and stops without selecting an item or changing state
 
 ### Requirement: Explicit selection preserves the complete safe proposal workflow
-After resolving the item, the workflow SHALL use the same live issue and paginated-comment fetch, untrusted-data boundary, linked-change detection, reuse confirmation, deterministic change identifier, traceability identities, `$openspec-propose` Codex invocation, artifact checks, strict OpenSpec validation, and local link persistence used by interactive planning. It SHALL stop for review without applying the change or mutating GitHub.
+After resolving the item, the workflow SHALL use the same live issue and paginated-comment fetch, untrusted-data boundary, linked-change detection, reuse confirmation, deterministic change identifier, traceability identities, `$openspec-propose` Codex invocation, artifact checks, strict OpenSpec validation, and local link persistence used by interactive planning. It SHALL confirm the guarded Todo to In Progress start transition before proposal generation as specified by `ai-local-project-work-start`, then stop for review without applying the change or another GitHub mutation.
 
 #### Scenario: New explicit issue proposal succeeds
 - **WHEN** the explicit issue is eligible, has no linked change, Codex completes proposal generation, and independent artifact and strict validation pass
@@ -62,7 +62,7 @@ After resolving the item, the workflow SHALL use the same live issue and paginat
 
 #### Scenario: Proposal generation or validation fails
 - **WHEN** Codex fails or the generated artifacts, traceability, requirements, tasks, or strict validation are invalid
-- **THEN** the workflow reports failure, persists no new link, leaves GitHub unchanged, and does not invoke the apply workflow
+- **THEN** the workflow reports failure, persists no new link, leaves any confirmed In Progress status available for retry, and does not invoke the apply workflow
 
 ### Requirement: Help and documentation expose the exact command boundary
 CLI help and repository documentation SHALL show `npm run ai:local -- --issue <github-issue-url>`, explain that the standalone `--` forwards the option through npm, distinguish URL-targeted planning from interactive planning and synchronization, and state that both planning forms stop before implementation.

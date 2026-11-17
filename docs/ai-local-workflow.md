@@ -1,6 +1,6 @@
 # Local AI Planning and Project Synchronization
 
-This repository provides a local, fail-closed workflow for turning a GitHub Projects v2 `Todo` issue into a reviewed OpenSpec change and, only after implementation is independently verified, changing that one Project item to `Done`.
+This repository provides a local, fail-closed workflow for turning a GitHub Projects v2 `Todo` issue into a reviewed OpenSpec change. URL-targeted planning first moves the selected item to `In Progress`. Only after implementation is independently verified can synchronization change that item to `Done`.
 
 ## Prerequisites and authentication
 
@@ -16,7 +16,7 @@ gh auth status
 
 The classic-token scopes shown above cover private repository issue reads, Project discovery, and the final Project field update. A fine-grained token needs equivalent access. Organization Projects can also require organization read permission, SSO authorization, or an organization policy exception. As of 2026-11-10, this checkout's active `dotin2001` credential reports an invalid token; re-run `gh auth login` or `gh auth refresh` before a live workflow.
 
-The default [configuration](../ai-local.config.json) targets `dotin2001/ai-marketing-report`, user-owned Project 2, exact field `Status`, and exact options `Todo` and `Done`. Node IDs are always resolved live. For a fork, copy the JSON to another repository-local path, change the explicit identities, and select it for one invocation:
+The default [configuration](../ai-local.config.json) targets `dotin2001/ai-marketing-report`, user-owned Project 2, exact field `Status`, and exact options `Todo`, `In Progress`, and `Done`. Node IDs are always resolved live. For a fork, copy the JSON to another repository-local path, change the explicit identities, and select it for one invocation:
 
 ```sh
 AI_LOCAL_CONFIG=ai-local.fork.json npm run ai:local -- --help
@@ -40,7 +40,7 @@ When you already know the issue, target it by canonical URL:
 npm run ai:local -- --issue https://github.com/dotin2001/ai-marketing-report/issues/2
 ```
 
-The standalone `--` tells npm to forward the following `--issue` option to the local CLI. The URL must use HTTPS on `github.com`, have the exact path `/<owner>/<repository>/issues/<positive-number>` with at most a trailing slash, contain no credentials, port, query, or fragment, and name the configured repository. The issue must resolve to exactly one item whose status is the configured exact `Todo` option in the configured Project. URL-targeted planning bypasses only the numbered selector; it retains complete Project pagination, live issue and comment loading, duplicate-link detection, traceability, validation, and every no-mutation boundary.
+The standalone `--` tells npm to forward the following `--issue` option to the local CLI. The URL must use HTTPS on `github.com`, have the exact path `/<owner>/<repository>/issues/<positive-number>` with at most a trailing slash, contain no credentials, port, query, or fragment, and name the configured repository. The issue must resolve to exactly one item whose status is the configured exact `Todo` or `In Progress` option in the configured Project. URL-targeted planning retains complete Project pagination, live issue and comment loading, duplicate-link detection, traceability, and validation. After eligibility checks, it moves an exact `Todo` item to `In Progress` and confirms the update before proposal generation. An already `In Progress` retry receives no duplicate write. A cancelled reuse leaves status unchanged; other statuses or a failed update stop before proposal generation. A later proposal failure leaves a confirmed `In Progress` status available for retry.
 
 For a new issue, the CLI invokes Codex with the literal skill request `$openspec-propose`, then independently checks the artifacts, traceability marker, requirements/check definitions, and strict OpenSpec validation. If an active proposal already links the same issue, the CLI offers to reuse it instead of creating a duplicate. Planning stops after reporting validated artifact paths.
 
@@ -75,16 +75,16 @@ Every gate below must pass before the sole GitHub mutation is reachable:
 1. One local workflow owns the repository lock.
 2. Configuration, tools, Git remote, named branch, HEAD, and `gh` authentication are valid.
 3. Proposal marker and local link record agree on repository, Project, item, issue, branch, base commit, and change.
-4. Fresh GitHub reads confirm the same Project/item/issue linkage and an exact `Todo` or idempotent `Done` status.
+4. Fresh GitHub reads confirm the same Project/item/issue linkage and an exact `Todo`, `In Progress`, or idempotent `Done` status.
 5. The current issue resolves to explicit Acceptance Criteria or one non-empty natural-language request criterion; proposal, design, specs, and tasks are complete; every required task is checked.
 6. Required commands are discovered only from trusted repository instructions/configuration and approved OpenSpec tasks.
 7. Strict OpenSpec validation and every applicable required command pass. Failed, missing, skipped, blocked, or timed-out required checks stop synchronization. Commands resolved to the `backend-test` profile run in a child environment with `APP_ENV=test`; the workflow's test-only dotenv signal prevents `backend/.env` from restoring values that a negative configuration test deliberately removes. The caller environment and dotenv file are never modified, and ordinary application startup keeps its normal dotenv behavior.
 8. Verification-only Codex structured output covers every criterion, requirement, scenario, and task with concrete evidence; Node reconciles it against actual command results.
 9. Identity, worktree, specification/instruction, issue/comment, and required-check fingerprints are unchanged after checks.
 10. Immediately before mutation, Git/GitHub identities, linkage, status, field/options, and every fingerprint are read and compared again.
-11. Exactly one `updateProjectV2ItemFieldValue` sets the selected item's `Status` to the freshly resolved `Done` option, followed by a confirming read.
+11. Exactly one `updateProjectV2ItemFieldValue` sets the selected item's `Status` from `Todo` or `In Progress` to the freshly resolved `Done` option, followed by a confirming read.
 
-The issue remains open. A status other than exact `Todo` or `Done` is a conflict. An already-`Done` item exits successfully without a duplicate write.
+The issue remains open. A status other than exact `Todo`, `In Progress`, or `Done` is a conflict. An already-`Done` item exits successfully without a duplicate write.
 
 ### Conditional PostgreSQL checks
 
@@ -126,7 +126,7 @@ If verification passes but GitHub mutation/confirmation fails, retry the same sy
 
 The atomic lock stores PID, hostname, owner ID, mode, and start time. A live same-host or any remote-host lock is never removed. If the owning PID is dead on the same host, planning asks for explicit confirmation before recovering the stale lock. Do not manually delete a lock until you have confirmed no workflow process owns it; ownership is rechecked during release so one process cannot remove another's lock.
 
-Authentication failures happen before Project reads or writes. Repair them with the commands in the prerequisites section and rerun. Verification failures leave `Todo` unchanged. A GitHub failure after passing verification retains retryable evidence. The workflow never commits, pushes, merges, rebases, switches branches, deploys, destructively cleans the worktree, closes an issue, or updates another Project item.
+Authentication failures happen before Project reads or writes. Repair them with the commands in the prerequisites section and rerun. A start-status failure stops before proposal generation and reports a safe retry instruction; a retry re-reads the Project item first. Completion-verification failures leave `Todo` or `In Progress` unchanged. A GitHub failure after passing verification retains retryable evidence. The workflow never commits, pushes, merges, rebases, switches branches, deploys, destructively cleans the worktree, closes an issue, or updates another Project item.
 
 ## Command reference
 

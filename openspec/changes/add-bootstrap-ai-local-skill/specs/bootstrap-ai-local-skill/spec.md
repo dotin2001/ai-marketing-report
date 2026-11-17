@@ -27,21 +27,21 @@ The skill SHALL bundle the CLI entry point, runner modules, structured-output sc
 - **THEN** preview and apply report the conflict and no target files are overwritten
 
 ### Requirement: Target settings are explicit and credential-free
-The generated setup SHALL make repository identity, Project owner/number, exact status field and Todo/Done option names, package manager, and argv-based required verification commands configurable. It SHALL NOT copy credentials, GitHub node IDs, or source-repository identifiers.
+The generated setup SHALL make repository identity, Project owner/number, exact status field and Todo/In Progress/Done option names, package manager, and argv-based required verification commands configurable. It SHALL NOT copy credentials, GitHub node IDs, or source-repository identifiers.
 
 #### Scenario: Target configuration is generated
 - **WHEN** the operator supplies target Project settings and confirms detected checks
 - **THEN** the generated configuration contains those non-secret values and no credential or source repository identity
 
 ### Requirement: Planning stops for explicit human review
-The generated workflow SHALL select an eligible configured-Project Todo issue interactively or by canonical `--issue` URL, load issue/comments as untrusted data, invoke `$openspec-propose`, validate the proposal, and stop without implementing or mutating GitHub. Applying SHALL remain an explicit `$openspec-apply-change <change-id>` action outside the runner.
+The generated workflow SHALL select an eligible configured-Project Todo issue interactively or by canonical `--issue` URL, load issue/comments as untrusted data, invoke `$openspec-propose`, validate the proposal, and stop without implementing. URL-targeted planning SHALL confirm Todo to In Progress before proposal generation, while interactive planning SHALL leave status unchanged. Applying SHALL remain an explicit `$openspec-apply-change <change-id>` action outside the runner.
 
 #### Scenario: Planning succeeds
 - **WHEN** mocked GitHub data contains one eligible Todo issue and proposal validation passes
-- **THEN** the workflow reports the reviewable change and manual apply command without invoking implementation or a Project mutation
+- **THEN** the workflow reports the reviewable change and manual apply command without invoking implementation or another Project mutation
 
 ### Requirement: Synchronization remains fail closed
-The generated workflow SHALL require parseable issue acceptance criteria, completed OpenSpec tasks, strict validation, every required configured or discovered command, complete semantic verification evidence, stable fingerprints, and fresh live identity/status checks before deciding to move the selected item from Todo to Done.
+The generated workflow SHALL require parseable issue acceptance criteria, completed OpenSpec tasks, strict validation, every required configured or discovered command, complete semantic verification evidence, stable fingerprints, and fresh live identity/status checks before deciding to move the selected item from Todo or In Progress to Done.
 
 #### Scenario: Acceptance criteria are missing
 - **WHEN** an issue has no `## Acceptance Criteria` heading with Markdown bullet criteria
@@ -52,7 +52,7 @@ The generated workflow SHALL require parseable issue acceptance criteria, comple
 - **THEN** synchronization records a failed or blocked verification outcome and does not decide or attempt to move the item to Done
 
 #### Scenario: Verification passes
-- **WHEN** all requirements, tasks, configured checks, semantic evidence, fingerprints, and final live guards pass for the same Todo item
+- **WHEN** all requirements, tasks, configured checks, semantic evidence, fingerprints, and final live guards pass for the same Todo or In Progress item
 - **THEN** the workflow produces exactly one guarded Done status decision and confirms the configured Done option while leaving the issue open
 
 ### Requirement: Skill documentation provides exact target commands

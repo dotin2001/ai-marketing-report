@@ -16,12 +16,13 @@ const config = {
   repositoryRoot: "/repo", runtimePath: "/repo/.ai-local",
   github: {
     repository: "owner/repo", projectOwner: "owner", projectNumber: 2,
-    statusField: "Status", todoOption: "Todo", doneOption: "Done",
+    statusField: "Status", todoOption: "Todo", inProgressOption: "In Progress", doneOption: "Done",
   },
 };
 const project = {
   id: "P", ownerLogin: "owner", number: 2,
   statusField: { id: "F", name: "Status" }, todoOption: { id: "TODO", name: "Todo" },
+  inProgressOption: { id: "PROGRESS", name: "In Progress" },
   doneOption: { id: "DONE", name: "Done" },
 };
 const item = {
@@ -116,6 +117,27 @@ test("successful CLI journey changes only the selected Todo item to Done", async
   assert.equal(value.records.at(-1).synchronization.state, "succeeded");
   assert.match(value.output.value, /Issue remains open/);
   assert.equal(value.state.releases, 1);
+});
+
+test("verified In Progress item moves to Done through the same completion gates", async () => {
+  const value = harness({
+    fetchProjectItem: async () => ({ ...item, status: "In Progress", statusOptionId: "PROGRESS" }),
+  });
+  const result = await main(["--sync-task", "--change", changeId], value.dependencies);
+  assert.equal(result.kind, "synchronized");
+  assert.equal(value.state.checks, 1);
+  assert.equal(value.state.mutations, 1);
+  assert.equal(value.records.at(-1).synchronization.state, "succeeded");
+});
+
+test("failed completion check leaves In Progress untouched", async () => {
+  const value = harness({
+    fetchProjectItem: async () => ({ ...item, status: "In Progress", statusOptionId: "PROGRESS" }),
+    executeRequiredChecks: async () => ({ passed: false, results: [], failedRequired: [{ state: "failed" }] }),
+  });
+  const result = await main(["--sync-task", "--change", changeId], value.dependencies);
+  assert.equal(result.code, "verification_failed");
+  assert.equal(value.state.mutations, 0);
 });
 
 test("natural-language request reaches semantic verification and an unmet fallback cannot mutate", async () => {

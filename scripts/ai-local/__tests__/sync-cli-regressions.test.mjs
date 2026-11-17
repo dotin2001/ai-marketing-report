@@ -73,6 +73,7 @@ async function cliFixture({ kind, done = false, scenario = "passing" }) {
       projectNumber: 11,
       statusField: "Delivery",
       todoOption: "Queued",
+      inProgressOption: "Running",
       doneOption: "Complete",
     },
     runtimeDirectory: ".ai-local",
@@ -98,6 +99,7 @@ async function cliFixture({ kind, done = false, scenario = "passing" }) {
     number: traceability.projectNumber,
     statusField: { id: "FIELD", name: "Delivery" },
     todoOption: { id: "QUEUED", name: "Queued" },
+    inProgressOption: { id: "RUNNING", name: "Running" },
     doneOption: { id: "COMPLETE", name: "Complete" },
     unrelatedItems: [{ id: "UNRELATED", status: "In progress" }],
   };

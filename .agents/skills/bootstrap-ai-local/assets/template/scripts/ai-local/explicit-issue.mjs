@@ -75,17 +75,16 @@ export function assertConfiguredRepository(target, configuredRepository) {
   return Object.freeze({ ...target, repository: configuredRepository });
 }
 
-export function resolveExplicitIssue(items, target, todoOption = "Todo") {
+export function resolveExplicitIssue(items, target, project) {
   const matches = items.filter(
     (item) =>
       item.repository.toLowerCase() === target.repository.toLowerCase() &&
-      item.issueNumber === target.issueNumber &&
-      item.status === todoOption,
+      item.issueNumber === target.issueNumber,
   );
   if (matches.length === 0) {
     throw new GitHubError(
       "explicit_issue_not_eligible",
-      `Issue ${target.repository}#${target.issueNumber} is not an eligible Todo item in the configured Project.`,
+      `Issue ${target.repository}#${target.issueNumber} is not an eligible issue in the configured Project.`,
     );
   }
   if (matches.length > 1) {
@@ -94,5 +93,15 @@ export function resolveExplicitIssue(items, target, todoOption = "Todo") {
       `Issue ${target.repository}#${target.issueNumber} resolves to ${matches.length} eligible Project items.`,
     );
   }
-  return Object.freeze({ kind: "selected", item: matches[0] });
+  const item = matches[0];
+  const eligible = [project.todoOption, project.inProgressOption].some(
+    (option) => item.status === option.name && item.statusOptionId === option.id,
+  );
+  if (!eligible) {
+    throw new GitHubError(
+      "explicit_issue_not_eligible",
+      `Issue ${target.repository}#${target.issueNumber} is not in an eligible Project status.`,
+    );
+  }
+  return Object.freeze({ kind: "selected", item });
 }

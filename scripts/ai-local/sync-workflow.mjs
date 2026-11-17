@@ -213,6 +213,7 @@ export async function runSynchronizationWorkflow(options = {}, dependencies = {}
           issue: finalIssue,
         },
         todoName: config.github.todoOption,
+        inProgressName: config.github.inProgressOption,
         doneName: config.github.doneOption,
       },
       (guarded) => (dependencies.synchronizeProjectStatus ?? synchronizeProjectStatus)(github, guarded, finalProject),

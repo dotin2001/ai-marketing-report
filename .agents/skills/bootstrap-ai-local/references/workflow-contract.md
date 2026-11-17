@@ -36,6 +36,7 @@ node "$SKILL_DIR/scripts/bootstrap.mjs" \
   --project-number 1 \
   --status-field 'Status' \
   --todo-option 'Todo' \
+  --in-progress-option 'In Progress' \
   --done-option 'Done' \
   --package-manager npm \
   --verification-command '["npm","test"]' \
@@ -54,7 +55,7 @@ For an npm target:
 # Plan by selecting an eligible Todo issue
 npm run ai:local
 
-# Plan one eligible issue by canonical URL
+# Move one eligible Todo issue to In Progress and plan by canonical URL
 npm run ai:local -- --issue https://github.com/owner/repository/issues/123
 
 # Review, then explicitly apply in Codex (not a shell command)
@@ -82,6 +83,7 @@ For pnpm, yarn, or bun, replace `npm` with the configured package manager. The g
 | `github.projectNumber` | Positive Projects v2 number |
 | `github.statusField` | Exact single-select field name |
 | `github.todoOption` | Exact eligible planning option name |
+| `github.inProgressOption` | Exact started-work option name |
 | `github.doneOption` | Exact successful synchronization option name |
 | `packageManager` | `npm`, `pnpm`, `yarn`, or `bun` |
 | `verification.autoDiscover` | Whether trusted target files add applicable checks |
@@ -110,7 +112,8 @@ Checkbox bullets are also accepted. No parseable bullets produces `acceptance_cr
 - Semantic verification must cover every issue criterion, normative requirement, scenario, and completed task with concrete evidence.
 - Code/worktree, specification, issue, command-definition, and identity fingerprints must remain stable.
 - Final Git and GitHub reads must still match the traced repository, branch, Project, item, issue, status field, and options.
-- A passing result authorizes one guarded status-field update to Done and a confirmation read. It does not close the issue.
+- URL-targeted planning confirms exactly one Todo to In Progress update before proposal generation; an In Progress retry is read-only.
+- A passing completion result authorizes one guarded Todo or In Progress to Done update and a confirmation read. It does not close the issue.
 
 ## Conflict handling
 

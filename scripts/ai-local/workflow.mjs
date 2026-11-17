@@ -19,13 +19,15 @@ import { createPlanningContext } from "./planning-context.mjs";
 import { createPolicyTransport } from "./policy.mjs";
 import { runPreflight } from "./preflight.mjs";
 import { runProcess } from "./process.mjs";
-import { fetchEligibleItems, resolveProject } from "./project.mjs";
+import { fetchEligibleItems, fetchProjectIssues, resolveProject } from "./project.mjs";
 import {
   atomicWriteJson,
   cleanupOwnedTemp,
   ensureRuntimeLayout,
 } from "./runtime.mjs";
 import { createTerminalPrompt, selectIssue } from "./selector.mjs";
+import { startProjectWork } from "./status-sync.mjs";
+import { TraceabilityError } from "./errors.mjs";
 import {
   createLinkRecord,
   createTraceability,
@@ -35,12 +37,14 @@ function yes(answer) {
   return ["y", "yes"].includes(String(answer ?? "").trim().toLowerCase());
 }
 
-function displayProposal(output, validated, kind) {
+function displayProposal(output, validated, kind, started) {
   output.write(`\n${kind === "reuse" ? "Reusing" : "Created"} validated OpenSpec change: ${validated.changeId}\n`);
   for (const artifactPath of validated.artifactPaths) output.write(`- ${artifactPath}\n`);
   output.write("Strict OpenSpec validation passed.\n");
   output.write(`Review the artifacts, then manually invoke $openspec-apply-change ${validated.changeId} in Codex.\n`);
-  output.write("No implementation or GitHub state change was performed.\n");
+  output.write(started
+    ? "Project item is In Progress. No implementation was performed.\n"
+    : "No implementation or GitHub state change was performed.\n");
 }
 
 export async function runPlanningWorkflow(options = {}, dependencies = {}) {
@@ -73,12 +77,14 @@ export async function runPlanningWorkflow(options = {}, dependencies = {}) {
     const preflight = await (dependencies.runPreflight ?? runPreflight)(config, { ...dependencies, runCommand });
     const github = dependencies.githubClient ?? createGitHubClient({ cwd: repositoryRoot, runCommand });
     const project = await (dependencies.resolveProject ?? resolveProject)(github, config);
-    const items = await (dependencies.fetchEligibleItems ?? fetchEligibleItems)(github, project, config);
+    const items = explicitTarget
+      ? await (dependencies.fetchProjectIssues ?? fetchProjectIssues)(github, project, config)
+      : await (dependencies.fetchEligibleItems ?? fetchEligibleItems)(github, project, config);
     const selection = explicitTarget
       ? (dependencies.resolveExplicitIssue ?? resolveExplicitIssue)(
           items,
           explicitTarget,
-          config.github.todoOption,
+          project,
         )
       : await (dependencies.selectIssue ?? selectIssue)(items, { prompt, output });
     if (selection.kind !== "selected") return selection;
@@ -91,6 +97,14 @@ export async function runPlanningWorkflow(options = {}, dependencies = {}) {
     });
 
     if (linked.kind === "reuse") {
+      if (explicitTarget && (
+        linked.traceability.projectId !== project.id ||
+        linked.traceability.projectItemId !== selection.item.projectItemId ||
+        linked.traceability.issueId !== issue.id ||
+        linked.traceability.repositoryId !== issue.repository.id
+      )) {
+        throw new TraceabilityError("link_disagreement", "The linked change does not match the selected Project item. Review its traceability before retrying.");
+      }
       const reuse = dependencies.confirmReuse
         ? await dependencies.confirmReuse(linked)
         : yes(await prompt.ask(`Reuse linked change ${linked.changeId}? [y/N] `));
@@ -98,13 +112,16 @@ export async function runPlanningWorkflow(options = {}, dependencies = {}) {
         output.write("Linked change reuse cancelled; no new proposal was created.\n");
         return { kind: "cancelled", exitCode: 0 };
       }
+      if (explicitTarget) {
+        await (dependencies.startProjectWork ?? startProjectWork)(github, project, selection.item, issue);
+      }
       const validated = await (dependencies.validateProposalOutput ?? validateProposalOutput)({
         repositoryRoot,
         changeId: linked.changeId,
         expectedTraceability: linked.traceability,
         runCommand,
       });
-      displayProposal(output, validated, "reuse");
+      displayProposal(output, validated, "reuse", Boolean(explicitTarget));
       return { kind: "proposal_ready", reused: true, exitCode: 0, changeId: linked.changeId };
     }
 
@@ -127,6 +144,9 @@ export async function runPlanningWorkflow(options = {}, dependencies = {}) {
       baseCommit: preflight.head,
       changeId,
     });
+    if (explicitTarget) {
+      await (dependencies.startProjectWork ?? startProjectWork)(github, project, selection.item, issue);
+    }
     const context = await (dependencies.createPlanningContext ?? createPlanningContext)(runtimePaths, {
       issue,
       traceability,
@@ -150,7 +170,7 @@ export async function runPlanningWorkflow(options = {}, dependencies = {}) {
     });
     const recordPath = path.join(runtimePaths.links, `${changeId}.json`);
     await (dependencies.atomicWriteJson ?? atomicWriteJson)(recordPath, createLinkRecord(traceability));
-    displayProposal(output, validated, "created");
+    displayProposal(output, validated, "created", Boolean(explicitTarget));
     return { kind: "proposal_ready", reused: false, exitCode: 0, changeId, recordPath };
   } finally {
     await lock.release();

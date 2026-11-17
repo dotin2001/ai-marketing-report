@@ -11,13 +11,14 @@ const fingerprints = {
   requiredChecks: "e",
 };
 
-function options(status = "Todo", statusNames = { todo: "Todo", done: "Done" }) {
+function options(status = "Todo") {
   return {
     verification: { kind: "VerifiedSynchronization" },
     verifiedFingerprints: fingerprints,
     currentFingerprints: { ...fingerprints },
-    todoName: statusNames.todo,
-    doneName: statusNames.done,
+    todoName: "Todo",
+    inProgressName: "In Progress",
+    doneName: "Done",
     identityInput: {
       traceability: {
         repository: "owner/repo", repositoryId: "R", projectOwner: "owner", projectNumber: 2,
@@ -29,11 +30,13 @@ function options(status = "Todo", statusNames = { todo: "Todo", done: "Done" }) 
       preflight: { repository: "owner/repo", branch: "feature/work", head: "abc" },
       project: {
         ownerLogin: "owner", number: 2, id: "P",
-        statusField: { id: "F" }, doneOption: { id: "DONE" },
+        statusField: { id: "F" }, todoOption: { id: "TODO" },
+        inProgressOption: { id: "PROGRESS" }, doneOption: { id: "DONE" },
       },
       item: {
         projectId: "P", projectItemId: "PI", issueId: "I", issueNumber: 7,
         repository: "owner/repo", repositoryId: "R", status,
+        statusOptionId: status === "Todo" ? "TODO" : status === "In Progress" ? "PROGRESS" : "DONE",
       },
       issue: { id: "I", number: 7, repository: { id: "R", nameWithOwner: "owner/repo" } },
     },
@@ -49,10 +52,16 @@ test("matching live Todo state produces a typed mutation token", () => {
   );
 });
 
-test("configured status names produce the configured terminal decision", () => {
-  const result = prepareStatusMutation(options("Ready", { todo: "Ready", done: "Complete" }));
+test("matching live In Progress state produces the same verified Done token", () => {
+  const result = prepareStatusMutation(options("In Progress"));
   assert.equal(result.kind, "ReadyStatusMutation");
-  assert.equal(result.doneName, "Complete");
+  assert.equal(result.doneOptionId, "DONE");
+});
+
+test("In Progress with the wrong live option ID is a conflict", () => {
+  const value = options("In Progress");
+  value.identityInput.item.statusOptionId = "OTHER";
+  assert.throws(() => prepareStatusMutation(value), (error) => error.code === "status_conflict");
 });
 
 test("changed fingerprints stop before mutation", async () => {

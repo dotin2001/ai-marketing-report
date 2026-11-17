@@ -8,6 +8,7 @@ export function prepareStatusMutation({
   currentFingerprints,
   identityInput,
   todoName,
+  inProgressName,
   doneName,
 }) {
   if (verification?.kind !== "VerifiedSynchronization") {
@@ -21,14 +22,18 @@ export function prepareStatusMutation({
   }
   const identity = assertLiveIdentity(identityInput);
   const status = identityInput.item.status;
-  if (status === doneName) {
+  if (status === doneName && identityInput.item.statusOptionId === identityInput.project.doneOption.id) {
     return Object.freeze({ kind: "already_done", exitCode: 0, identity });
   }
-  if (status !== todoName) {
+  const statusOptionId = identityInput.item.statusOptionId;
+  const expectedOption = status === todoName
+    ? identityInput.project.todoOption
+    : status === inProgressName ? identityInput.project.inProgressOption : null;
+  if (!expectedOption || statusOptionId !== expectedOption.id) {
     throw new VerificationError(
       "status_conflict",
-      `Project item status is ${status ?? "unavailable"}; expected ${todoName} or ${doneName}.`,
-      { status, todoName, doneName },
+      `Project item status is ${status ?? "unavailable"}; expected ${todoName}, ${inProgressName}, or ${doneName}.`,
+      { status, todoName, inProgressName, doneName },
     );
   }
   return Object.freeze({

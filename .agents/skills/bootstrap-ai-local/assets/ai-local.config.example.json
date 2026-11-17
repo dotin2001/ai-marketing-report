@@ -5,6 +5,7 @@
     "projectNumber": 1,
     "statusField": "Status",
     "todoOption": "Todo",
+    "inProgressOption": "In Progress",
     "doneOption": "Done"
   },
   "packageManager": "npm",

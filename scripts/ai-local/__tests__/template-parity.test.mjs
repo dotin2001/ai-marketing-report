@@ -18,12 +18,18 @@ const templateRoot = path.join(
 const sharedFiles = [
   "check-plan.mjs",
   "codex.mjs",
+  "cli.mjs",
   "config.mjs",
   "evidence.mjs",
   "fingerprint.mjs",
+  "guard.mjs",
+  "explicit-issue.mjs",
+  "project.mjs",
   "postgres-preflight.mjs",
   "process.mjs",
+  "status-sync.mjs",
   "sync-workflow.mjs",
+  "workflow.mjs",
   "verification.mjs",
   "schemas/verification.schema.json",
 ];

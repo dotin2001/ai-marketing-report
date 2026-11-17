@@ -4,22 +4,23 @@ import { runSynchronizationWorkflow } from "./sync-workflow.mjs";
 import { runPlanningWorkflow } from "./workflow.mjs";
 
 export const HELP_TEXT = `Usage:
-  node scripts/ai-local.mjs
-  node scripts/ai-local.mjs --issue <github-issue-url>
-  node scripts/ai-local.mjs --sync-task [--change <change-id>]
-  node scripts/ai-local.mjs --help
+  npm run ai:local
+  npm run ai:local -- --issue <github-issue-url>
+  npm run ai:local -- --sync-task [--change <change-id>]
+  npm run ai:local -- --help
 
 Modes:
   planning                Select a Todo issue and create or reuse an OpenSpec proposal.
-  --sync-task             Verify an implemented change and synchronize Todo to Done.
+  --sync-task             Verify an implemented change and synchronize Todo or In Progress to Done.
 
 Options:
-  --issue <url>           Plan one eligible Todo issue from its canonical GitHub URL.
+  --issue <url>           Move an eligible Todo issue to In Progress, then plan it.
   --change <change-id>    Select the linked OpenSpec change for synchronization.
   -h, --help              Show this help text.
 
 Planning stops after proposal validation for manual review. It never applies a change,
 closes an issue, switches branches, commits, pushes, merges, or deploys.
+An already In Progress explicit issue can resume without another status write.
 `;
 
 const CHANGE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;

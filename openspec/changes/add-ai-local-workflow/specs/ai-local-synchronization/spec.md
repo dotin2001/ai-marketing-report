@@ -76,7 +76,7 @@ For every synchronization attempt, the workflow SHALL persist a credential-free 
 - **THEN** the evidence is invalidated and the complete verification process runs again before any mutation
 
 ### Requirement: Todo to Done mutation is narrow and conflict-safe
-The workflow SHALL dynamically resolve the current Project Status field and Todo and Done option identifiers. It SHALL update only the recorded Project item from exactly Todo to exactly Done after every gate passes and after confirming verified fingerprints have not changed. It SHALL never close the issue or update another item.
+The workflow SHALL dynamically resolve the current Project Status field and Todo, In Progress, and Done option identifiers. It SHALL update only the recorded Project item from exactly Todo or In Progress to exactly Done after every gate passes and after confirming verified fingerprints have not changed. It SHALL never close the issue or update another item.
 
 #### Scenario: All gates pass and item remains Todo
 - **WHEN** completion verification passes, fingerprints remain valid, and the selected Project item's current status is exactly Todo
@@ -86,8 +86,12 @@ The workflow SHALL dynamically resolve the current Project Status field and Todo
 - **WHEN** the selected item is already exactly Done
 - **THEN** the workflow reports that no update is needed and does not issue a duplicate mutation
 
+#### Scenario: All gates pass and item is In Progress
+- **WHEN** completion verification passes, fingerprints remain valid, and the selected Project item's current status is exactly In Progress
+- **THEN** the workflow updates only that item to Done and confirms the resulting live status
+
 #### Scenario: Item moved to another status
-- **WHEN** the selected item is neither exactly Todo nor exactly Done
+- **WHEN** the selected item is neither exactly Todo, In Progress, nor Done
 - **THEN** the workflow reports a status conflict and does not overwrite it
 
 #### Scenario: Inputs change between verification and mutation

@@ -14,6 +14,7 @@ const valid = {
     projectNumber: 7,
     statusField: "Status",
     todoOption: "Todo",
+    inProgressOption: "In Progress",
     doneOption: "Done",
   },
   runtimeDirectory: ".runtime",
@@ -31,11 +32,25 @@ test("loads a valid alternate AI_LOCAL_CONFIG", async () => {
 
   assert.equal(config.github.repository, "example-owner/example-repo");
   assert.equal(config.github.projectNumber, 7);
+  assert.equal(config.github.inProgressOption, "In Progress");
   assert.equal(config.runtimePath, path.join(root, ".runtime"));
+});
+
+test("installed configuration declares a distinct In Progress option", async () => {
+  const configPath = path.resolve(import.meta.dirname, "../../../ai-local.config.json");
+  const config = await loadConfiguration({ repositoryRoot: path.dirname(configPath), environment: { AI_LOCAL_CONFIG: configPath } });
+  assert.ok(config.github.inProgressOption);
+  assert.notEqual(config.github.inProgressOption, config.github.todoOption);
+  assert.notEqual(config.github.inProgressOption, config.github.doneOption);
 });
 
 for (const [name, mutate] of [
   ["missing github fields", (copy) => delete copy.github.statusField],
+  ["missing In Progress option", (copy) => delete copy.github.inProgressOption],
+  ["blank In Progress option", (copy) => (copy.github.inProgressOption = "")],
+  ["whitespace In Progress option", (copy) => (copy.github.inProgressOption = " In Progress")],
+  ["duplicate Todo and In Progress", (copy) => (copy.github.inProgressOption = "Todo")],
+  ["duplicate In Progress and Done", (copy) => (copy.github.inProgressOption = "Done")],
   ["zero project number", (copy) => (copy.github.projectNumber = 0)],
   ["absolute runtime path", (copy) => (copy.runtimeDirectory = "/tmp/outside")],
   ["escaping runtime path", (copy) => (copy.runtimeDirectory = "../outside")],
