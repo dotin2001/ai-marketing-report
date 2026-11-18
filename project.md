@@ -647,6 +647,10 @@ cd backend && python -m pytest tests/integration/processing/test_confirmed_impor
 
 Expected configuration groups include:
 
+Report listing requires `REPORT_CURSOR_SIGNING_KEY`, a unique random secret of at least
+32 bytes. Set it in the backend environment before startup; the backend example
+environment file contains a placeholder only. Cursors expire after 24 hours.
+
 - Application: environment, public origins, API base URL, signing or authentication settings.
 - PostgreSQL: application and migration database URLs.
 - Redis/Celery: broker and worker settings.

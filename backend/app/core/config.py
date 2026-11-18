@@ -91,6 +91,15 @@ class Settings(BaseSettings):
         le=60,
         validation_alias="OBJECT_STORAGE_TIMEOUT_SECONDS",
     )
+    report_cursor_signing_key: SecretStr = Field(validation_alias="REPORT_CURSOR_SIGNING_KEY")
+
+    @field_validator("report_cursor_signing_key")
+    @classmethod
+    def validate_cursor_key(cls, value: SecretStr) -> SecretStr:
+        raw = _reject_placeholder(value.get_secret_value())
+        if len(raw.encode()) < 32:
+            raise ValueError("REPORT_CURSOR_SIGNING_KEY must contain at least 32 bytes")
+        return value
 
     @field_validator(
         "app_host",

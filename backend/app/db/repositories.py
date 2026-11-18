@@ -148,7 +148,11 @@ async def save_draft_objectives(
             ReportDraft.is_active.is_(True),
             ReportDraft.revision == expected_revision,
         )
-        .values(revision=expected_revision + 1, updated_at=func.current_timestamp())
+        .values(
+            revision=expected_revision + 1,
+            objectives_revision=expected_revision + 1,
+            updated_at=func.current_timestamp(),
+        )
     )
     if _affected(result) != 1:
         raise ConcurrencyConflict("draft revision is stale")
@@ -453,11 +457,25 @@ async def confirm_source_review(
     )
     if source is None or source.checksum_sha256 != source_checksum:
         raise ConcurrencyConflict("source review revision is stale")
+    report = await session.scalar(
+        select(Report)
+        .where(
+            Report.id == report_id,
+            Report.owner_id == owner_id,
+            Report.current_source_id == source_id,
+        )
+        .with_for_update()
+    )
+    if report is None:
+        raise ConcurrencyConflict("source review revision is stale")
     confirmation = SourceReviewConfirmation(
         owner_id=owner_id,
         report_id=report_id,
         source_id=source_id,
         source_checksum=source_checksum,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
         confirmed_by=confirmed_by,
     )
     session.add(confirmation)
@@ -760,7 +778,7 @@ async def create_analysis_job(
             ReportDraft.revision == draft_revision,
         )
     )
-    if report is None or draft is None or objectives_revision != draft_revision:
+    if report is None or draft is None or objectives_revision != draft.objectives_revision:
         raise ConcurrencyConflict("analysis input revision is stale")
 
     inserted = await session.scalar(
@@ -907,8 +925,7 @@ async def finish_analysis_job(
             and report.current_dataset_id == job.dataset_id
             and report.current_metric_result_set_id == job.metric_result_set_id
             and active_draft.id == job.draft_id
-            and active_draft.revision == job.draft_revision
-            and job.objectives_revision == job.draft_revision
+            and active_draft.objectives_revision == job.objectives_revision
         )
         if is_fresh and report is not None and active_draft is not None:
             report.current_analysis_result_id = result.id
@@ -1019,8 +1036,7 @@ async def retry_analysis_job(
             or job.attempt_count != expected_attempt_count
             or report.current_dataset_id != job.dataset_id
             or report.current_metric_result_set_id != job.metric_result_set_id
-            or draft.revision != job.draft_revision
-            or job.objectives_revision != job.draft_revision
+            or draft.objectives_revision != job.objectives_revision
         ):
             raise ConcurrencyConflict("analysis retry state or input is stale")
         next_ordinal = expected_attempt_count + 1
@@ -1100,6 +1116,7 @@ async def finalize_idempotency(
     result_type: str,
     result_id: UUID,
     success_status: int,
+    result_snapshot: str | None = None,
 ) -> IdempotencyRecord:
     if not result_type.strip() or not 200 <= success_status <= 299:
         raise ValueError("idempotency finalization is invalid")
@@ -1121,6 +1138,7 @@ async def finalize_idempotency(
             result_type=result_type.strip(),
             result_id=result_id,
             success_status=success_status,
+            result_snapshot=result_snapshot,
             updated_at=func.current_timestamp(),
         )
     )

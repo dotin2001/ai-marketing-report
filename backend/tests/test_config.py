@@ -13,6 +13,20 @@ def build(data: dict[str, Any]) -> Settings:
     return Settings(_env_file=None, **data)
 
 
+def test_report_cursor_signing_key_is_required_and_strong(
+    valid_settings_data: dict[str, Any],
+) -> None:
+    for invalid in (None, "short", "CHANGE_ME_RANDOM_SECRET_AT_LEAST_32_BYTES"):
+        data = dict(valid_settings_data)
+        if invalid is None:
+            del data["REPORT_CURSOR_SIGNING_KEY"]
+        else:
+            data["REPORT_CURSOR_SIGNING_KEY"] = invalid
+        with pytest.raises(ValidationError) as error:
+            build(data)
+        assert "REPORT_CURSOR_SIGNING_KEY" in str(error.value)
+
+
 def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) -> None:
     settings = build(valid_settings_data)
 

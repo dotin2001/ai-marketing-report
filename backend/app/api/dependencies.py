@@ -9,6 +9,7 @@ from fastapi import Request
 
 from app.api.errors import APIError
 from app.domain.assets import AssetServices
+from app.domain.reports import ReportServices
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,4 +27,9 @@ async def get_authenticated_principal() -> AuthenticatedPrincipal:
 
 def get_asset_services(request: Request) -> AssetServices:
     service: AssetServices = request.app.state.asset_services
+    return service
+
+
+def get_report_services(request: Request) -> ReportServices:
+    service: ReportServices = request.app.state.report_services
     return service

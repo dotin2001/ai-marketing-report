@@ -30,6 +30,7 @@ def valid_settings_data() -> dict[str, Any]:
         "SOURCE_CSV_MAX_BYTES": 10_485_760,
         "GENERATED_PDF_MAX_BYTES": 26_214_400,
         "OBJECT_STORAGE_TIMEOUT_SECONDS": 10,
+        "REPORT_CURSOR_SIGNING_KEY": "unit-test-report-cursor-signing-key-0001",
     }
 
 

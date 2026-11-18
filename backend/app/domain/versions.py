@@ -158,6 +158,9 @@ async def save_current_report_version(
                 SourceReviewConfirmation.report_id == report_id,
                 SourceReviewConfirmation.source_id == source.id,
                 SourceReviewConfirmation.source_checksum == source.checksum_sha256,
+                SourceReviewConfirmation.period_start == report.period_start,
+                SourceReviewConfirmation.period_end == report.period_end,
+                SourceReviewConfirmation.period_revision == report.period_revision,
             )
         )
         if (

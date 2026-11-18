@@ -67,6 +67,7 @@ class Report(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    period_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     current_source_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
     current_dataset_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
     current_metric_result_set_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
@@ -76,6 +77,7 @@ class Report(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("id", "owner_id", name="uq_reports_id_owner"),
         CheckConstraint("btrim(name) <> ''", name="name_not_blank"),
         CheckConstraint("period_end >= period_start", name="period_inclusive"),
+        CheckConstraint("period_revision > 0", name="period_revision_positive"),
         Index(
             "ix_reports_owner_created_keyset", "owner_id", text("created_at DESC"), text("id DESC")
         ),
@@ -88,6 +90,7 @@ class ReportDraft(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     owner_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
     report_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    objectives_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     current_metric_result_set_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
     current_analysis_result_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
@@ -101,6 +104,10 @@ class ReportDraft(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         UniqueConstraint("id", "report_id", "owner_id", name="uq_report_drafts_aggregate"),
         CheckConstraint("revision > 0", name="revision_positive"),
+        CheckConstraint(
+            "objectives_revision > 0 AND objectives_revision <= revision",
+            name="objectives_revision_valid",
+        ),
         Index(
             "uq_report_drafts_one_active",
             "report_id",
@@ -743,6 +750,9 @@ class SourceReviewConfirmation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     report_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
     source_id: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
     source_checksum: Mapped[bytes] = mapped_column(LargeBinary(SHA256_LENGTH), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    period_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     confirmed_by: Mapped[UUID] = mapped_column(UUID_TYPE, nullable=False)
 
     __table_args__ = (
@@ -759,8 +769,13 @@ class SourceReviewConfirmation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             ondelete="RESTRICT",
         ),
         UniqueConstraint(
-            "source_id", "source_checksum", name="uq_source_review_confirmations_exact_source"
+            "source_id",
+            "source_checksum",
+            "period_revision",
+            name="uq_source_review_confirmations_exact_source",
         ),
+        CheckConstraint("period_end >= period_start", name="period_inclusive"),
+        CheckConstraint("period_revision > 0", name="period_revision_positive"),
     )
 
 
@@ -1268,6 +1283,7 @@ class IdempotencyRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     result_type: Mapped[str | None] = mapped_column(String(64))
     result_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
     success_status: Mapped[int | None] = mapped_column(Integer)
+    result_snapshot: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         UniqueConstraint(
