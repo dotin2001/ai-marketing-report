@@ -81,6 +81,24 @@ class Settings(BaseSettings):
         le=1_073_741_824,
         validation_alias="SOURCE_CSV_MAX_BYTES",
     )
+    source_text_max_bytes: int = Field(
+        default=1_048_576, gt=0, le=10_485_760, validation_alias="SOURCE_TEXT_MAX_BYTES"
+    )
+    source_csv_max_records: int = Field(
+        default=100_000, gt=0, le=1_000_000, validation_alias="SOURCE_CSV_MAX_RECORDS"
+    )
+    source_preview_max_rows: int = Field(
+        default=50, gt=0, le=1000, validation_alias="SOURCE_PREVIEW_MAX_ROWS"
+    )
+    source_preview_max_text_chars: int = Field(
+        default=2000, gt=0, le=100_000, validation_alias="SOURCE_PREVIEW_MAX_TEXT_CHARS"
+    )
+    source_preview_max_cell_chars: int = Field(
+        default=500, gt=0, le=10_000, validation_alias="SOURCE_PREVIEW_MAX_CELL_CHARS"
+    )
+    source_preview_max_response_bytes: int = Field(
+        default=65_536, gt=0, le=1_048_576, validation_alias="SOURCE_PREVIEW_MAX_RESPONSE_BYTES"
+    )
     generated_pdf_max_bytes: int = Field(
         gt=0,
         le=1_073_741_824,

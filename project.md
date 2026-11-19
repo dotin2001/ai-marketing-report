@@ -645,6 +645,14 @@ cd backend && python -m pytest tests/integration/processing/test_confirmed_impor
 
 ## Environment Configuration
 
+Source intake defaults: `SOURCE_CSV_MAX_BYTES=10485760` (maximum 1 GiB),
+`SOURCE_TEXT_MAX_BYTES=1048576` (maximum 10 MiB), and
+`SOURCE_CSV_MAX_RECORDS=100000` (maximum 1,000,000). Preview defaults are
+`SOURCE_PREVIEW_MAX_ROWS=50` (maximum 1,000),
+`SOURCE_PREVIEW_MAX_TEXT_CHARS=2000` (maximum 100,000),
+`SOURCE_PREVIEW_MAX_CELL_CHARS=500` (maximum 10,000), and
+`SOURCE_PREVIEW_MAX_RESPONSE_BYTES=65536` (maximum 1 MiB). Every bound must be positive.
+
 Expected configuration groups include:
 
 Report listing requires `REPORT_CURSOR_SIGNING_KEY`, a unique random secret of at least

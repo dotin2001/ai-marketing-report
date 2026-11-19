@@ -12,12 +12,14 @@ from app.api.errors import APIError, api_error_handler, request_validation_handl
 from app.api.health import router as health_router
 from app.api.pdf_downloads import router as pdf_download_router
 from app.api.reports import router as report_router
+from app.api.sources import router as source_router
 from app.core.config import Settings
 from app.core.health import ResourceProbeProvider
 from app.core.resources import ResourceClients, create_resource_clients
 from app.db.session import create_session_factory
 from app.domain.assets import AssetServices
 from app.domain.reports import ReportServices
+from app.domain.sources import SourceServices
 from app.storage.coordinator import StorageCoordinator
 from app.storage.keys import TrustedKeyBuilder
 from app.storage.s3 import S3ObjectStorage
@@ -51,6 +53,14 @@ def create_app(
                 source_csv_max_bytes=resolved_settings.source_csv_max_bytes,
                 generated_pdf_max_bytes=resolved_settings.generated_pdf_max_bytes,
             )
+            app.state.source_services = SourceServices(
+                sessions=create_session_factory(clients.postgresql),
+                coordinator=StorageCoordinator(app.state.object_storage),
+                keys=TrustedKeyBuilder(
+                    environment=resolved_settings.app_env, bucket=resolved_settings.s3_bucket
+                ),
+                settings=resolved_settings,
+            )
         app.state.probe_provider = ResourceProbeProvider(
             clients=clients,
             bucket=resolved_settings.s3_bucket,
@@ -71,4 +81,5 @@ def create_app(
     application.include_router(health_router)
     application.include_router(pdf_download_router)
     application.include_router(report_router)
+    application.include_router(source_router)
     return application

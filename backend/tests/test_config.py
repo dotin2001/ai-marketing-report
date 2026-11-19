@@ -35,6 +35,12 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
     assert settings.redis_url.get_secret_value().startswith("redis://")
     assert settings.s3_use_ssl is False
     assert settings.source_csv_max_bytes == 10_485_760
+    assert settings.source_text_max_bytes == 1_048_576
+    assert settings.source_csv_max_records == 100_000
+    assert settings.source_preview_max_rows == 50
+    assert settings.source_preview_max_text_chars == 2000
+    assert settings.source_preview_max_cell_chars == 500
+    assert settings.source_preview_max_response_bytes == 65_536
     assert settings.generated_pdf_max_bytes == 26_214_400
     assert settings.object_storage_timeout_seconds == 10
 
@@ -90,6 +96,18 @@ def test_each_required_setting_is_enforced(
         ("S3_USE_SSL", "sometimes"),
         ("SOURCE_CSV_MAX_BYTES", 0),
         ("SOURCE_CSV_MAX_BYTES", 1_073_741_825),
+        ("SOURCE_TEXT_MAX_BYTES", 0),
+        ("SOURCE_TEXT_MAX_BYTES", 10_485_761),
+        ("SOURCE_CSV_MAX_RECORDS", 0),
+        ("SOURCE_CSV_MAX_RECORDS", 1_000_001),
+        ("SOURCE_PREVIEW_MAX_ROWS", 0),
+        ("SOURCE_PREVIEW_MAX_ROWS", 1001),
+        ("SOURCE_PREVIEW_MAX_TEXT_CHARS", 0),
+        ("SOURCE_PREVIEW_MAX_TEXT_CHARS", 100_001),
+        ("SOURCE_PREVIEW_MAX_CELL_CHARS", 0),
+        ("SOURCE_PREVIEW_MAX_CELL_CHARS", 10_001),
+        ("SOURCE_PREVIEW_MAX_RESPONSE_BYTES", 0),
+        ("SOURCE_PREVIEW_MAX_RESPONSE_BYTES", 1_048_577),
         ("GENERATED_PDF_MAX_BYTES", 0),
         ("GENERATED_PDF_MAX_BYTES", 1_073_741_825),
         ("OBJECT_STORAGE_TIMEOUT_SECONDS", 0),
