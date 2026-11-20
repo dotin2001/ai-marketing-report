@@ -18,6 +18,7 @@ from app.core.health import ResourceProbeProvider
 from app.core.resources import ResourceClients, create_resource_clients
 from app.db.session import create_session_factory
 from app.domain.assets import AssetServices
+from app.domain.import_review import ImportReviewServices
 from app.domain.reports import ReportServices
 from app.domain.sources import SourceServices
 from app.storage.coordinator import StorageCoordinator
@@ -60,6 +61,9 @@ def create_app(
                     environment=resolved_settings.app_env, bucket=resolved_settings.s3_bucket
                 ),
                 settings=resolved_settings,
+            )
+            app.state.import_review_services = ImportReviewServices(
+                create_session_factory(clients.postgresql), resolved_settings
             )
         app.state.probe_provider = ResourceProbeProvider(
             clients=clients,

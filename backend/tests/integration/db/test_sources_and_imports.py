@@ -25,11 +25,139 @@ from app.db.repositories import (
     attach_source,
     confirm_import_validation,
     confirm_source_review,
+    create_import_configuration,
+    get_import_configuration,
+    get_import_validation,
     get_source,
+    persist_import_validation,
 )
 from tests.integration.db.conftest import seed_report
 
 pytestmark = pytest.mark.postgres
+
+
+@pytest.mark.asyncio
+async def test_owner_scoped_review_repository_keeps_revision_and_issue_order(
+    db_session: AsyncSession,
+) -> None:
+    owner, report, _ = await seed_report(db_session, subject="review-repository")
+    source = await attach_csv_source(db_session, owner_id=owner.id, report_id=report.id)
+    configuration = await create_import_configuration(
+        db_session,
+        owner_id=owner.id,
+        report_id=report.id,
+        source_id=source.id,
+        normalization_policy_version="normalize-v1",
+        mappings=[(0, "date")],
+    )
+    assert configuration.current_revision == 1
+    assert (
+        await get_import_configuration(
+            db_session, owner_id=uuid4(), report_id=report.id, source_id=source.id
+        )
+        is None
+    )
+    assert (
+        await append_import_revision(
+            db_session,
+            configuration_id=configuration.id,
+            owner_id=owner.id,
+            report_id=report.id,
+            expected_revision=1,
+            normalization_policy_version="normalize-v1",
+            date_format="%Y-%m-%d",
+            mappings=[(0, "date"), (1, "campaign_name")],
+        )
+        == 2
+    )
+    with pytest.raises(ConcurrencyConflict):
+        await append_import_revision(
+            db_session,
+            configuration_id=configuration.id,
+            owner_id=owner.id,
+            report_id=report.id,
+            expected_revision=1,
+            normalization_policy_version="normalize-v1",
+            mappings=[],
+        )
+    result = await persist_import_validation(
+        db_session,
+        owner_id=owner.id,
+        report_id=report.id,
+        configuration_id=configuration.id,
+        revision=2,
+        source_checksum=source.checksum_sha256,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
+        total_records=1,
+        issues=[
+            {
+                "code": "missing_measure_mapping",
+                "severity": "error",
+                "message": "Map at least one supported measure.",
+            },
+            {
+                "code": "unmapped_column",
+                "severity": "warning",
+                "message": "A source column is excluded from calculations.",
+                "source_column_ordinal": 2,
+            },
+        ],
+    )
+    assert (
+        await get_import_validation(
+            db_session, owner_id=uuid4(), report_id=report.id, validation_id=result.id
+        )
+        is None
+    )
+    loaded = await get_import_validation(
+        db_session, owner_id=owner.id, report_id=report.id, validation_id=result.id
+    )
+    assert loaded is not None
+    assert (loaded[0].error_count, loaded[0].warning_count, loaded[0].total_records) == (1, 1, 1)
+    assert [item.code for item in loaded[1]] == ["missing_measure_mapping", "unmapped_column"]
+
+
+@pytest.mark.asyncio
+async def test_historical_validation_without_freshness_identity_cannot_confirm(
+    db_session: AsyncSession,
+) -> None:
+    owner, report, _ = await seed_report(db_session, subject="historical-validation")
+    source = await attach_csv_source(db_session, owner_id=owner.id, report_id=report.id)
+    configuration = await create_import_configuration(
+        db_session,
+        owner_id=owner.id,
+        report_id=report.id,
+        source_id=source.id,
+        normalization_policy_version="normalize-v1",
+        mappings=[],
+    )
+    historical = ImportValidation(
+        owner_id=owner.id,
+        report_id=report.id,
+        configuration_id=configuration.id,
+        revision=1,
+        error_count=0,
+        warning_count=0,
+    )
+    db_session.add(historical)
+    await db_session.flush()
+    with pytest.raises(ConcurrencyConflict, match="stale"):
+        await confirm_import_validation(
+            db_session,
+            owner_id=owner.id,
+            report_id=report.id,
+            configuration_id=configuration.id,
+            revision=1,
+            validation_id=historical.id,
+            confirmed_by=owner.id,
+            acknowledged_warning_ids=[],
+            canonical_data_identity=b"h" * 32,
+            row_count=1,
+            period_start=report.period_start,
+            period_end=report.period_end,
+        )
 
 
 async def attach_csv_source(
@@ -266,7 +394,7 @@ async def test_import_revision_is_append_only_and_compare_and_set(
         )
     )
     await db_session.flush()
-    with pytest.raises(ValueError, match="required dimensions"):
+    with pytest.raises(ValueError, match="duplicate mapping"):
         await append_import_revision(
             db_session,
             configuration_id=config.id,
@@ -274,9 +402,9 @@ async def test_import_revision_is_append_only_and_compare_and_set(
             report_id=report.id,
             expected_revision=1,
             normalization_policy_version="normalize-v1",
-            mappings=[(0, "date"), (1, "clicks")],
+            mappings=[(0, "date"), (0, "clicks")],
         )
-    with pytest.raises(ValueError, match="one measure"):
+    with pytest.raises(ValueError, match="invalid mapping"):
         await append_import_revision(
             db_session,
             configuration_id=config.id,
@@ -284,7 +412,7 @@ async def test_import_revision_is_append_only_and_compare_and_set(
             report_id=report.id,
             expected_revision=1,
             normalization_policy_version="normalize-v1",
-            mappings=[(0, "date"), (1, "campaign_name"), (2, "currency")],
+            mappings=[(0, "date"), (1, "campaign_name"), (2, "not_a_field")],
         )
     mappings = [(0, "date"), (1, "campaign_name"), (2, "currency"), (3, "clicks")]
     assert (
@@ -375,6 +503,11 @@ async def test_import_confirmation_requires_current_error_free_validation_and_al
         revision=1,
         error_count=1,
         warning_count=0,
+        source_checksum=source.checksum_sha256,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
+        total_records=1,
     )
     db_session.add(error_validation)
     await db_session.flush()
@@ -404,7 +537,7 @@ async def test_import_confirmation_requires_current_error_free_validation_and_al
             canonical_data_identity=b"e" * 32,
             row_count=1,
             period_start=date(2026, 1, 1),
-            period_end=date(2026, 1, 31),
+            period_end=report.period_end,
         )
 
     warning_validation = ImportValidation(
@@ -414,6 +547,11 @@ async def test_import_confirmation_requires_current_error_free_validation_and_al
         revision=1,
         error_count=0,
         warning_count=1,
+        source_checksum=source.checksum_sha256,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
+        total_records=1,
     )
     db_session.add(warning_validation)
     await db_session.flush()
@@ -442,7 +580,7 @@ async def test_import_confirmation_requires_current_error_free_validation_and_al
             canonical_data_identity=b"w" * 32,
             row_count=1,
             period_start=date(2026, 1, 1),
-            period_end=date(2026, 1, 31),
+            period_end=report.period_end,
         )
     confirmation = await confirm_import_validation(
         db_session,
@@ -456,7 +594,7 @@ async def test_import_confirmation_requires_current_error_free_validation_and_al
         canonical_data_identity=b"w" * 32,
         row_count=1,
         period_start=date(2026, 1, 1),
-        period_end=date(2026, 1, 31),
+        period_end=report.period_end,
     )
     assert (
         await db_session.scalar(
@@ -490,5 +628,5 @@ async def test_import_confirmation_requires_current_error_free_validation_and_al
             canonical_data_identity=b"s" * 32,
             row_count=1,
             period_start=date(2026, 1, 1),
-            period_end=date(2026, 1, 31),
+            period_end=report.period_end,
         )

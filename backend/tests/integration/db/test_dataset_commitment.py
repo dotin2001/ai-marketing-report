@@ -83,6 +83,11 @@ async def _confirmed(
         revision=1,
         error_count=0,
         warning_count=0,
+        source_checksum=source.checksum_sha256,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
+        total_records=1,
     )
     session.add(validation)
     await session.flush()
@@ -208,6 +213,8 @@ async def test_new_confirmation_retains_old_dataset(db_session: AsyncSession) ->
         )
     )
     await db_session.flush()
+    current_source = await db_session.get(ReportSource, configuration.source_id)
+    assert current_source is not None
     validation = ImportValidation(
         owner_id=owner.id,
         report_id=report.id,
@@ -215,6 +222,11 @@ async def test_new_confirmation_retains_old_dataset(db_session: AsyncSession) ->
         revision=2,
         error_count=0,
         warning_count=0,
+        source_checksum=current_source.checksum_sha256,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
+        total_records=1,
     )
     db_session.add(validation)
     await db_session.flush()

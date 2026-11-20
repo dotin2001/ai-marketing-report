@@ -114,6 +114,11 @@ async def seed_dataset_metric_aggregate(
         revision=1,
         error_count=0,
         warning_count=0,
+        source_checksum=source.checksum_sha256,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        period_revision=report.period_revision,
+        total_records=1,
     )
     session.add(validation)
     await session.flush()

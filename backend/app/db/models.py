@@ -586,6 +586,11 @@ class ImportValidation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     error_count: Mapped[int] = mapped_column(Integer, nullable=False)
     warning_count: Mapped[int] = mapped_column(Integer, nullable=False)
     canonical_preview_identity: Mapped[bytes | None] = mapped_column(LargeBinary(SHA256_LENGTH))
+    source_checksum: Mapped[bytes | None] = mapped_column(LargeBinary(SHA256_LENGTH))
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    period_revision: Mapped[int | None] = mapped_column(Integer)
+    total_records: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -611,6 +616,16 @@ class ImportValidation(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "id", "report_id", "owner_id", name="uq_import_validations_owner_aggregate"
         ),
         CheckConstraint("error_count >= 0 AND warning_count >= 0", name="issue_counts_nonnegative"),
+        CheckConstraint(
+            "source_checksum IS NULL OR octet_length(source_checksum) = 32",
+            name="source_checksum_length",
+        ),
+        CheckConstraint(
+            "period_revision IS NULL OR period_revision > 0", name="period_revision_positive"
+        ),
+        CheckConstraint(
+            "total_records IS NULL OR total_records >= 0", name="total_records_nonnegative"
+        ),
     )
 
 

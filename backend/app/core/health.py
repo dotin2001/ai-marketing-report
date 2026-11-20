@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from redis.asyncio import Redis
 from sqlalchemy import text
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 DependencyName = str
 Probe = Callable[[], Awaitable[None]]
+ProbeState = Literal["ready", "unavailable"]
 
 
 class ProbeProvider(Protocol):
@@ -54,7 +55,9 @@ class ResourceProbeProvider:
         }
 
 
-async def _run_one(name: DependencyName, probe: Probe, timeout_seconds: float) -> tuple[str, str]:
+async def _run_one(
+    name: DependencyName, probe: Probe, timeout_seconds: float
+) -> tuple[DependencyName, ProbeState]:
     try:
         await asyncio.wait_for(probe(), timeout=timeout_seconds)
     except TimeoutError:
@@ -70,7 +73,7 @@ async def _run_one(name: DependencyName, probe: Probe, timeout_seconds: float) -
 async def check_readiness(
     provider: ProbeProvider,
     timeout_seconds: float,
-) -> dict[DependencyName, str]:
+) -> dict[DependencyName, ProbeState]:
     probes = provider.probes()
     results = await asyncio.gather(
         *(_run_one(name, probe, timeout_seconds) for name, probe in probes.items())

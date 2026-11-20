@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, StrictStr
+from pydantic import Field, StrictInt, StrictStr
 
 from app.api.report_schemas import PublicModel, StrictModel
 
@@ -55,3 +55,71 @@ class SourcePreview(StrictModel):
 
 class SourcePreviewEnvelope(StrictModel):
     data: SourcePreview
+
+
+class ColumnMapping(StrictModel):
+    source_column_ordinal: StrictInt = Field(ge=0)
+    canonical_field: Literal[
+        "date", "campaign_name", "currency", "impressions", "clicks", "spend", "leads"
+    ]
+
+
+class ImportConfigurationRequest(StrictModel):
+    expected_revision: StrictInt = Field(ge=0)
+    normalization_policy_version: Literal["normalize-v1"]
+    date_format: Literal["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"] | None = None
+    mappings: list[ColumnMapping] = Field(max_length=7)
+
+
+class ImportConfigurationDetail(StrictModel):
+    id: UUID
+    report_id: UUID
+    source_id: UUID
+    revision: int
+    normalization_policy_version: str
+    date_format: str | None
+    mappings: list[ColumnMapping]
+    confirmed: Literal[False] = False
+
+
+class ImportConfigurationEnvelope(StrictModel):
+    data: ImportConfigurationDetail
+
+
+class ValidateImportRequest(StrictModel):
+    expected_revision: StrictInt = Field(ge=1)
+
+
+class ValidationIssue(StrictModel):
+    id: UUID
+    code: str
+    severity: Literal["error", "warning"]
+    message: str
+    canonical_field: str | None
+    source_column_ordinal: int | None
+    source_record_index: int | None
+    related_record_index: int | None
+
+
+class ImportValidationDetail(StrictModel):
+    id: UUID
+    report_id: UUID
+    source_id: UUID
+    configuration_id: UUID
+    revision: int
+    source_checksum_sha256: str
+    normalization_policy_version: str
+    period_start: date
+    period_end: date
+    period_revision: int
+    total_records: int
+    error_count: int
+    warning_count: int
+    confirmation_blocked: bool
+    confirmed: Literal[False] = False
+    preview_identity: str | None = None
+    issues: list[ValidationIssue]
+
+
+class ImportValidationEnvelope(StrictModel):
+    data: ImportValidationDetail

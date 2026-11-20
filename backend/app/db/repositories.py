@@ -492,12 +492,9 @@ async def append_import_revision(
     expected_revision: int,
     normalization_policy_version: str,
     mappings: Sequence[tuple[int, str]],
+    date_format: str | None = None,
 ) -> int:
-    fields = {field for _, field in mappings}
-    if not {"date", "campaign_name", "currency"} <= fields:
-        raise ValueError("required dimensions are missing")
-    if not fields & {"impressions", "clicks", "spend", "leads"}:
-        raise ValueError("at least one measure is required")
+    _check_mapping_structure(mappings)
     next_revision = expected_revision + 1
     changed = await session.execute(
         update(ImportConfiguration)
@@ -518,6 +515,7 @@ async def append_import_revision(
             configuration_id=configuration_id,
             revision=next_revision,
             normalization_policy_version=normalization_policy_version,
+            date_format=date_format,
         )
     )
     await session.flush()
@@ -533,6 +531,149 @@ async def append_import_revision(
         for ordinal, field in mappings
     )
     return next_revision
+
+
+def _check_mapping_structure(mappings: Sequence[tuple[int, str]]) -> None:
+    allowed = {"date", "campaign_name", "currency", "impressions", "clicks", "spend", "leads"}
+    ordinals = [ordinal for ordinal, _ in mappings]
+    fields = [field for _, field in mappings]
+    if any(ordinal < 0 for ordinal in ordinals) or any(field not in allowed for field in fields):
+        raise ValueError("invalid mapping")
+    if len(set(ordinals)) != len(ordinals) or len(set(fields)) != len(fields):
+        raise ValueError("duplicate mapping")
+
+
+async def create_import_configuration(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    source_id: UUID,
+    normalization_policy_version: str,
+    mappings: Sequence[tuple[int, str]],
+    date_format: str | None = None,
+) -> ImportConfiguration:
+    _check_mapping_structure(mappings)
+    configuration = ImportConfiguration(
+        owner_id=owner_id,
+        report_id=report_id,
+        source_id=source_id,
+        source_type="csv",
+        current_revision=1,
+    )
+    session.add(configuration)
+    await session.flush()
+    session.add(
+        ImportConfigurationRevision(
+            owner_id=owner_id,
+            report_id=report_id,
+            configuration_id=configuration.id,
+            revision=1,
+            normalization_policy_version=normalization_policy_version,
+            date_format=date_format,
+        )
+    )
+    await session.flush()
+    session.add_all(
+        ImportColumnMapping(
+            owner_id=owner_id,
+            report_id=report_id,
+            configuration_id=configuration.id,
+            revision=1,
+            source_column_ordinal=ordinal,
+            canonical_field=field,
+        )
+        for ordinal, field in mappings
+    )
+    await session.flush()
+    return configuration
+
+
+async def get_import_configuration(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    source_id: UUID,
+) -> ImportConfiguration | None:
+    return await session.scalar(
+        select(ImportConfiguration).where(
+            ImportConfiguration.owner_id == owner_id,
+            ImportConfiguration.report_id == report_id,
+            ImportConfiguration.source_id == source_id,
+        )
+    )
+
+
+async def persist_import_validation(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    configuration_id: UUID,
+    revision: int,
+    source_checksum: bytes,
+    period_start: date,
+    period_end: date,
+    period_revision: int,
+    total_records: int,
+    issues: Sequence[dict[str, object]],
+) -> ImportValidation:
+    result = ImportValidation(
+        owner_id=owner_id,
+        report_id=report_id,
+        configuration_id=configuration_id,
+        revision=revision,
+        source_checksum=source_checksum,
+        period_start=period_start,
+        period_end=period_end,
+        period_revision=period_revision,
+        total_records=total_records,
+        error_count=sum(issue["severity"] == "error" for issue in issues),
+        warning_count=sum(issue["severity"] == "warning" for issue in issues),
+    )
+    session.add(result)
+    await session.flush()
+    session.add_all(
+        ImportValidationIssue(
+            owner_id=owner_id, report_id=report_id, validation_id=result.id, ordinal=index, **issue
+        )
+        for index, issue in enumerate(issues, 1)
+    )
+    await session.flush()
+    return result
+
+
+async def get_import_validation(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    validation_id: UUID,
+) -> tuple[ImportValidation, list[ImportValidationIssue]] | None:
+    result = await session.scalar(
+        select(ImportValidation).where(
+            ImportValidation.id == validation_id,
+            ImportValidation.owner_id == owner_id,
+            ImportValidation.report_id == report_id,
+        )
+    )
+    if result is None:
+        return None
+    issues = list(
+        (
+            await session.scalars(
+                select(ImportValidationIssue)
+                .where(
+                    ImportValidationIssue.validation_id == validation_id,
+                    ImportValidationIssue.owner_id == owner_id,
+                    ImportValidationIssue.report_id == report_id,
+                )
+                .order_by(ImportValidationIssue.ordinal)
+            )
+        ).all()
+    )
+    return result, issues
 
 
 async def confirm_import_validation(
@@ -573,6 +714,30 @@ async def confirm_import_validation(
     )
     if configuration is None or validation is None:
         raise ConcurrencyConflict("import validation revision is stale")
+    report = await session.scalar(
+        select(Report)
+        .where(
+            Report.id == report_id,
+            Report.owner_id == owner_id,
+            Report.current_source_id == configuration.source_id,
+        )
+        .with_for_update()
+    )
+    source = await get_source(
+        session, owner_id=owner_id, report_id=report_id, source_id=configuration.source_id
+    )
+    if (
+        report is None
+        or source is None
+        or validation.source_checksum is None
+        or validation.source_checksum != source.checksum_sha256
+        or validation.period_start != report.period_start
+        or validation.period_end != report.period_end
+        or validation.period_revision != report.period_revision
+        or period_start != report.period_start
+        or period_end != report.period_end
+    ):
+        raise ConcurrencyConflict("import validation input is stale")
 
     issues = (
         await session.scalars(

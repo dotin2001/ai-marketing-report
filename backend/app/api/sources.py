@@ -17,9 +17,22 @@ from app.api.dependencies import (
 )
 from app.api.errors import APIError
 from app.api.report_schemas import ErrorEnvelope
-from app.api.source_schemas import PasteSourceRequest, SourceEnvelope, SourcePreviewEnvelope
-from app.db.repositories import IdempotencyConflict
+from app.api.source_schemas import (
+    ImportConfigurationEnvelope,
+    ImportConfigurationRequest,
+    ImportValidationEnvelope,
+    PasteSourceRequest,
+    SourceEnvelope,
+    SourcePreviewEnvelope,
+    ValidateImportRequest,
+)
+from app.db.repositories import ConcurrencyConflict, IdempotencyConflict
 from app.domain.assets import AssetServices, ResourceNotFound
+from app.domain.import_review import (
+    ImportReviewServices,
+    InvalidMapping,
+    ReviewResponseTooLarge,
+)
 from app.domain.sources import SourceServices
 from app.processing.source_envelope import SourceEnvelopeError
 from app.storage.errors import StorageError
@@ -44,6 +57,10 @@ create_responses: dict[int | str, dict[str, Any]] = {
 
 def services(request: Request) -> SourceServices:
     return cast(SourceServices, request.app.state.source_services)
+
+
+def review_services(request: Request) -> ImportReviewServices:
+    return cast(ImportReviewServices, request.app.state.import_review_services)
 
 
 def mapped(error: Exception) -> APIError:
@@ -188,5 +205,63 @@ async def get_preview(
         return SourcePreviewEnvelope(
             data=await service.preview(principal.id, report_id, source_id, assets)
         )
+    except (ResourceNotFound, SourceEnvelopeError, StorageError) as exc:
+        raise mapped(exc) from None
+
+
+@router.put(
+    "/{source_id}/import-configuration",
+    response_model=ImportConfigurationEnvelope,
+    responses=errors,
+)
+async def put_import_configuration(
+    report_id: UUID,
+    source_id: UUID,
+    command: ImportConfigurationRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[ImportReviewServices, Depends(review_services)],
+    assets: Annotated[AssetServices, Depends(get_asset_services)],
+) -> ImportConfigurationEnvelope:
+    try:
+        return ImportConfigurationEnvelope(
+            data=await service.put_configuration(
+                principal.id, report_id, source_id, command, assets
+            )
+        )
+    except InvalidMapping as exc:
+        raise APIError(
+            422, "validation_failed", "The mapping is invalid.", details=exc.details
+        ) from None
+    except ConcurrencyConflict:
+        raise APIError(409, "revision_conflict", "The import revision is stale.") from None
+    except (ResourceNotFound, SourceEnvelopeError, StorageError) as exc:
+        raise mapped(exc) from None
+
+
+@router.post(
+    "/{source_id}/import-configuration/validate",
+    response_model=ImportValidationEnvelope,
+    responses=errors,
+)
+async def validate_import(
+    report_id: UUID,
+    source_id: UUID,
+    command: ValidateImportRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[ImportReviewServices, Depends(review_services)],
+    assets: Annotated[AssetServices, Depends(get_asset_services)],
+) -> ImportValidationEnvelope:
+    try:
+        return ImportValidationEnvelope(
+            data=await service.validate(principal.id, report_id, source_id, command, assets)
+        )
+    except ConcurrencyConflict:
+        raise APIError(409, "revision_conflict", "The import revision is stale.") from None
+    except ReviewResponseTooLarge:
+        raise APIError(
+            413,
+            "validation_response_too_large",
+            "The complete validation result exceeds the response limit.",
+        ) from None
     except (ResourceNotFound, SourceEnvelopeError, StorageError) as exc:
         raise mapped(exc) from None
