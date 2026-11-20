@@ -1,6 +1,6 @@
 from datetime import date
 
-from app.processing.csv_import import validate_csv
+from app.processing.csv_import import canonical_data_identity, process_csv, validate_csv
 from app.processing.source_envelope import parse_csv
 
 START = date(2026, 1, 1)
@@ -82,3 +82,61 @@ def test_warning_only_rows_remain_eligible_for_later_confirmation() -> None:
     issues = review(content, [(0, "date"), (1, "campaign_name"), (2, "currency"), (3, "clicks")])
     assert [item.code for item in issues] == ["unmapped_column", "duplicate_row", "mixed_currency"]
     assert all(item.severity == "warning" for item in issues)
+
+
+def test_canonical_candidates_keep_duplicates_and_exclude_unmapped_values() -> None:
+    content = (
+        b"date,campaign,currency,clicks,spend,unmapped\n"
+        b"2026-01-01, A ,usd,2,0.10,999\n"
+        b"2026-01-01, A ,usd,2,0.10,123\n"
+    )
+    envelope = parse_csv(content, max_bytes=1000, max_records=10)
+    result = process_csv(
+        envelope,
+        [(0, "date"), (1, "campaign_name"), (2, "currency"), (3, "clicks"), (4, "spend")],
+        date_format=None,
+        period_start=START,
+        period_end=END,
+    )
+    assert [row.source_record_index for row in result.rows] == [1, 2]
+    assert [row.campaign_name for row in result.rows] == ["A", "A"]
+    assert [row.currency for row in result.rows] == ["USD", "USD"]
+    assert [str(row.spend) for row in result.rows] == ["0.10", "0.10"]
+    assert all(not hasattr(row, "unmapped") for row in result.rows)
+    assert [item.code for item in result.issues] == ["unmapped_column", "duplicate_row"]
+
+
+def test_canonical_identity_changes_with_semantic_input() -> None:
+    from uuid import uuid4
+
+    envelope = parse_csv(
+        b"date,campaign,currency,spend\n2026-01-01,A,USD,0.30\n", max_bytes=1000, max_records=10
+    )
+    mappings = [(0, "date"), (1, "campaign_name"), (2, "currency"), (3, "spend")]
+    rows = process_csv(
+        envelope, mappings, date_format=None, period_start=START, period_end=END
+    ).rows
+    args = dict(
+        source_id=uuid4(),
+        source_checksum=b"s" * 32,
+        configuration_id=uuid4(),
+        revision=1,
+        normalization_policy_version="normalize-v1",
+        date_format=None,
+        period_start=START,
+        period_end=END,
+        period_revision=1,
+        mappings=mappings,
+        rows=rows,
+    )
+    assert canonical_data_identity(**args) == canonical_data_identity(**args)
+    for changed in (
+        {"source_checksum": b"x" * 32},
+        {"revision": 2},
+        {"normalization_policy_version": "normalize-v2"},
+        {"date_format": "%Y-%m-%d"},
+        {"period_revision": 2},
+        {"mappings": [*mappings[:-1], (3, "clicks")]},
+        {"rows": (*rows, rows[0])},
+    ):
+        assert canonical_data_identity(**(args | changed)) != canonical_data_identity(**args)

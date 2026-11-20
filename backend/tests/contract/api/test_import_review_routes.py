@@ -41,6 +41,7 @@ class FakeReview:
         self.owner_id, self.report_id, self.source_id = owner_id, report_id, source_id
         self.configuration_id = uuid4()
         self.validation_id = uuid4()
+        self.issue_id = uuid4()
         self.revision = 0
         self.too_large = False
 
@@ -110,7 +111,7 @@ class FakeReview:
             confirmation_blocked=True,
             issues=[
                 ValidationIssue(
-                    id=uuid4(),
+                    id=self.issue_id,
                     code="invalid_count",
                     severity="error",
                     message="The count must be a plain whole number.",
@@ -145,6 +146,9 @@ def test_import_review_routes_safe_contract_and_openapi(settings: Settings) -> N
             base + "/import-configuration/validate", json={"expected_revision": 1}
         )
         assert validation.status_code == 200
+        alias = client.post(base + "/validate", json={"expected_revision": 1})
+        assert alias.status_code == 200
+        assert alias.json() == validation.json()
         assert validation.json()["data"]["confirmation_blocked"] is True
         assert validation.json()["data"]["issues"][0]["source_record_index"] == 2
         assert validation.json()["data"]["total_records"] == 2
@@ -193,4 +197,5 @@ def test_import_review_routes_safe_contract_and_openapi(settings: Settings) -> N
             "/api/v1/reports/{report_id}/sources/{source_id}/import-configuration/validate"
         )
         assert "post" in paths[validation_path]
+        assert "post" in paths["/api/v1/reports/{report_id}/sources/{source_id}/validate"]
         assert "ImportValidationEnvelope" in str(paths[validation_path]["post"]["responses"]["200"])

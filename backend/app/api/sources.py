@@ -18,6 +18,8 @@ from app.api.dependencies import (
 from app.api.errors import APIError
 from app.api.report_schemas import ErrorEnvelope
 from app.api.source_schemas import (
+    ConfirmedImportEnvelope,
+    ConfirmImportRequest,
     ImportConfigurationEnvelope,
     ImportConfigurationRequest,
     ImportValidationEnvelope,
@@ -28,6 +30,12 @@ from app.api.source_schemas import (
 )
 from app.db.repositories import ConcurrencyConflict, IdempotencyConflict
 from app.domain.assets import AssetServices, ResourceNotFound
+from app.domain.import_confirmation import (
+    BlockedImportValidation,
+    ImportConfirmationServices,
+    StaleImportInput,
+    WarningAcknowledgementRequired,
+)
 from app.domain.import_review import (
     ImportReviewServices,
     InvalidMapping,
@@ -61,6 +69,10 @@ def services(request: Request) -> SourceServices:
 
 def review_services(request: Request) -> ImportReviewServices:
     return cast(ImportReviewServices, request.app.state.import_review_services)
+
+
+def confirmation_services(request: Request) -> ImportConfirmationServices:
+    return cast(ImportConfirmationServices, request.app.state.import_confirmation_services)
 
 
 def mapped(error: Exception) -> APIError:
@@ -243,6 +255,12 @@ async def put_import_configuration(
     response_model=ImportValidationEnvelope,
     responses=errors,
 )
+@router.post(
+    "/{source_id}/validate",
+    response_model=ImportValidationEnvelope,
+    responses=errors,
+    include_in_schema=True,
+)
 async def validate_import(
     report_id: UUID,
     source_id: UUID,
@@ -265,3 +283,70 @@ async def validate_import(
         ) from None
     except (ResourceNotFound, SourceEnvelopeError, StorageError) as exc:
         raise mapped(exc) from None
+
+
+confirm_responses: dict[int | str, dict[str, Any]] = {
+    **errors,
+    200: {
+        "model": ConfirmedImportEnvelope,
+        "headers": {
+            "Idempotency-Replayed": {
+                "description": "Present with value true when a confirmation is replayed.",
+                "schema": {"type": "string", "enum": ["true"]},
+            }
+        },
+    },
+}
+
+
+@router.post(
+    "/{source_id}/import-configuration/confirm",
+    response_model=ConfirmedImportEnvelope,
+    responses=confirm_responses,
+)
+@router.post(
+    "/{source_id}/confirm",
+    response_model=ConfirmedImportEnvelope,
+    responses=confirm_responses,
+)
+async def confirm_import(
+    report_id: UUID,
+    source_id: UUID,
+    command: ConfirmImportRequest,
+    response: Response,
+    principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)],
+    service: Annotated[ImportConfirmationServices, Depends(confirmation_services)],
+    assets: Annotated[AssetServices, Depends(get_asset_services)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> ConfirmedImportEnvelope:
+    try:
+        detail, replayed = await service.confirm(
+            principal.id, report_id, source_id, command, idempotency_key, assets
+        )
+    except ResourceNotFound as exc:
+        raise mapped(exc) from None
+    except IdempotencyConflict:
+        raise APIError(
+            409, "idempotency_conflict", "The idempotency key was used for another command."
+        ) from None
+    except WarningAcknowledgementRequired:
+        raise APIError(
+            409,
+            "warning_acknowledgement_required",
+            "Acknowledge every warning from this validation.",
+        ) from None
+    except BlockedImportValidation:
+        raise APIError(
+            422, "validation_failed", "The validation contains blocking errors."
+        ) from None
+    except StaleImportInput:
+        raise APIError(409, "stale_input", "The reviewed input has changed.") from None
+    except ConcurrencyConflict:
+        raise APIError(409, "revision_conflict", "The import revision is stale.") from None
+    except (SourceEnvelopeError, StorageError) as exc:
+        raise mapped(exc) from None
+    except ValueError:
+        raise APIError(422, "validation_failed", "The confirmation request is invalid.") from None
+    if replayed:
+        response.headers["Idempotency-Replayed"] = "true"
+    return ConfirmedImportEnvelope(data=detail)

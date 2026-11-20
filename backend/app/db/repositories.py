@@ -693,6 +693,14 @@ async def confirm_import_validation(
 ) -> ConfirmedImport:
     if confirmed_by != owner_id:
         raise ConcurrencyConflict("import confirmation owner is unavailable")
+    report = await session.scalar(
+        select(Report)
+        .where(
+            Report.id == report_id,
+            Report.owner_id == owner_id,
+        )
+        .with_for_update()
+    )
     configuration = await session.scalar(
         select(ImportConfiguration)
         .where(
@@ -712,22 +720,14 @@ async def confirm_import_validation(
             ImportValidation.revision == revision,
         )
     )
-    if configuration is None or validation is None:
+    if configuration is None or validation is None or report is None:
         raise ConcurrencyConflict("import validation revision is stale")
-    report = await session.scalar(
-        select(Report)
-        .where(
-            Report.id == report_id,
-            Report.owner_id == owner_id,
-            Report.current_source_id == configuration.source_id,
-        )
-        .with_for_update()
-    )
     source = await get_source(
         session, owner_id=owner_id, report_id=report_id, source_id=configuration.source_id
     )
     if (
         report is None
+        or report.current_source_id != configuration.source_id
         or source is None
         or validation.source_checksum is None
         or validation.source_checksum != source.checksum_sha256

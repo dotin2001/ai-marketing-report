@@ -14,12 +14,15 @@ def value(field: str, original: str, date_format: str | None = None) -> object:
 
 
 def test_valid_normalization_keeps_exact_values() -> None:
+    assert value("date", "2026-01-01") == START
     assert value("date", "2026-01-31") == END
     assert value("date", "31/01/2026", "%d/%m/%Y") == END
+    assert value("date", "01/31/2026", "%m/%d/%Y") == END
     assert value("campaign_name", "  Café  ") == "Café"
     assert value("currency", " usd ") == "USD"
     assert value("clicks", "00012") == 12
     assert value("spend", "0.30") == Decimal("0.30")
+    assert str(value("spend", "0.10")) == "0.10"
 
 
 @pytest.mark.parametrize(
@@ -35,9 +38,14 @@ def test_valid_normalization_keeps_exact_values() -> None:
         ("clicks", "-1", "negative_measure"),
         ("clicks", "1.5", "invalid_count"),
         ("clicks", "1,000", "invalid_count"),
+        ("clicks", "true", "invalid_count"),
+        ("clicks", "1e3", "invalid_count"),
+        ("spend", "", "missing_value"),
         ("spend", "-0.01", "negative_measure"),
         ("spend", "$1", "invalid_spend"),
         ("spend", "NaN", "invalid_spend"),
+        ("spend", "Infinity", "invalid_spend"),
+        ("spend", "1,00", "invalid_spend"),
         ("spend", "1%", "invalid_spend"),
     ],
 )

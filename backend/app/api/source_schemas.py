@@ -123,3 +123,33 @@ class ImportValidationDetail(StrictModel):
 
 class ImportValidationEnvelope(StrictModel):
     data: ImportValidationDetail
+
+
+class ConfirmImportRequest(StrictModel):
+    validation_id: UUID
+    expected_revision: StrictInt = Field(ge=1)
+    acknowledged_warning_ids: list[UUID] = Field(default_factory=list)
+
+
+class ConfirmedImportDetail(StrictModel):
+    id: UUID
+    report_id: UUID
+    source_id: UUID
+    validation_id: UUID
+    configuration_id: UUID
+    revision: int
+    confirmed_by: UUID
+    dataset_id: UUID
+    canonical_data_identity: str
+    source_checksum_sha256: str
+    normalization_policy_version: str
+    period_start: date
+    period_end: date
+    period_revision: int
+    row_count: int
+    currencies: list[str]
+    mappings: list[ColumnMapping]
+
+
+class ConfirmedImportEnvelope(StrictModel):
+    data: ConfirmedImportDetail
