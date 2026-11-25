@@ -73,11 +73,16 @@ class Settings(BaseSettings):
     analysis_stale_running_seconds: int = Field(
         default=600, ge=11, le=7200, validation_alias="ANALYSIS_STALE_RUNNING_SECONDS"
     )
+    openai_api_key: SecretStr = Field(validation_alias="OPENAI_API_KEY")
+    openai_model: str = Field(min_length=1, max_length=255, validation_alias="OPENAI_MODEL")
+    openai_timeout_seconds: float = Field(gt=0, le=300, validation_alias="OPENAI_TIMEOUT_SECONDS")
 
     @model_validator(mode="after")
     def validate_analysis_timeouts(self) -> Self:
         if self.analysis_stale_running_seconds <= self.analysis_task_time_limit_seconds:
             raise ValueError("ANALYSIS_STALE_RUNNING_SECONDS must exceed task time limit")
+        if self.openai_timeout_seconds >= self.analysis_task_time_limit_seconds - 5:
+            raise ValueError("OPENAI_TIMEOUT_SECONDS must leave time for job completion")
         return self
 
     s3_endpoint_url: str = Field(validation_alias="S3_ENDPOINT_URL")
@@ -133,6 +138,22 @@ class Settings(BaseSettings):
         if len(raw.encode()) < 32:
             raise ValueError("REPORT_CURSOR_SIGNING_KEY must contain at least 32 bytes")
         return value
+
+    @field_validator("openai_api_key")
+    @classmethod
+    def validate_openai_key(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        if not raw.strip():
+            raise ValueError("OPENAI_API_KEY must not be blank")
+        _reject_placeholder(raw)
+        return value
+
+    @field_validator("openai_model")
+    @classmethod
+    def validate_openai_model(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("OPENAI_MODEL must be a nonblank model identifier")
+        return _reject_placeholder(value)
 
     @field_validator(
         "app_host",

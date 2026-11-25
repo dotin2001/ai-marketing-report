@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import os
+from types import SimpleNamespace
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.ai import context as context_module
 from app.ai.context import PreparedContext, prepare_context
+from app.ai.openai_adapter import OpenAIAnalysisAdapter
 from app.ai.output import NarrativeItem, NumericAssertion, StructuredOutput
+from app.ai.prompt import PROMPT_VERSION
+from app.ai.wire import WireOutput
+from app.api.analysis_job_schemas import RetryAnalysisJobRequest
+from app.core.config import Settings
 from app.db.models import (
     AnalysisItemMetricReference,
     AnalysisJob,
@@ -23,10 +32,12 @@ from app.domain.analysis_jobs import AnalysisJobServices, current_analysis_input
 from app.jobs.analysis_worker import (
     AnalysisExecutionFailure,
     RunnerOutput,
+    analysis_task,
     execute_analysis,
     fail_stale_running,
 )
 from tests.integration.db.test_analysis_jobs import seed_analysis_job
+from tests.unit.ai.test_openai_adapter import FakeClient, response, wire_payload
 
 pytestmark = pytest.mark.postgres
 pytest_plugins = ("tests.integration.db.test_analysis_jobs",)
@@ -434,3 +445,252 @@ async def test_foreign_metric_reference_rolls_back_and_is_sanitized(
     assert detail.failure is not None
     assert detail.failure.code == "invalid_structured_output"
     assert detail.failure.message == "Analysis could not be completed."
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_worker_persists_actual_provenance_once(
+    concurrent_engine: AsyncEngine,
+    settings: Settings,
+) -> None:
+    sessions, owner, report, job_id, _semantic, numeric = await seeded(
+        concurrent_engine, "adapter-success"
+    )
+
+    class CheckingResponses:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def parse(self, **_kwargs: Any) -> Any:
+            self.calls += 1
+            async with sessions() as session:
+                job = await session.get(AnalysisJob, job_id)
+                assert job is not None and job.state == "running"
+            return response(model="provider-actual-model", response_id="resp_worker")
+
+    client = SimpleNamespace(responses=CheckingResponses())
+    runner = OpenAIAnalysisAdapter(settings, client)
+    assert await execute_analysis(sessions, owner, report, job_id, 1, runner)
+    assert not await execute_analysis(sessions, owner, report, job_id, 1, runner)
+    assert client.responses.calls == 1
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.state == "succeeded"
+        result = await session.scalar(select(AnalysisResult).where(AnalysisResult.job_id == job_id))
+        assert result is not None and result.id == job.current_result_id
+        assert result.model_identifier == "provider-actual-model"
+        assert result.prompt_version == PROMPT_VERSION
+        assert "resp_worker" in result.request_provenance
+        assert result.numeric_source_identity == numeric
+        assert (
+            await session.scalars(
+                select(AnalysisResult).where(
+                    AnalysisResult.job_id == job_id,
+                )
+            )
+        ).all() == [result]
+    public = await AnalysisJobServices(sessions, "s" * 32).detail(owner, report, job_id)
+    assert public.result is not None
+    assert public.result.summary[0].content == "Performance was stable."
+    assert public.result.model_identifier == "provider-actual-model"
+
+
+@pytest.mark.asyncio
+async def test_late_openai_response_cannot_attach_to_changed_draft(
+    concurrent_engine: AsyncEngine,
+    settings: Settings,
+) -> None:
+    sessions, owner, report, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "adapter-late"
+    )
+
+    class ChangingResponses:
+        async def parse(self, **_kwargs: Any) -> Any:
+            async with sessions.begin() as session:
+                job = await session.get(AnalysisJob, job_id)
+                assert job is not None and job.state == "running"
+                draft = await session.get(ReportDraft, job.draft_id)
+                assert draft is not None
+                draft.revision += 1
+            return response()
+
+    assert await execute_analysis(
+        sessions,
+        owner,
+        report,
+        job_id,
+        1,
+        OpenAIAnalysisAdapter(settings, SimpleNamespace(responses=ChangingResponses())),
+    )
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.failure_code == "stale_result"
+        assert job.current_result_id is None
+        draft = await session.get(ReportDraft, job.draft_id)
+        assert draft is not None and draft.revision == 2
+        assert (
+            await session.scalars(
+                select(AnalysisResult).where(
+                    AnalysisResult.job_id == job_id,
+                )
+            )
+        ).all() == []
+
+
+@pytest.mark.asyncio
+async def test_openai_failure_retry_and_old_delivery_use_one_result(
+    concurrent_engine: AsyncEngine,
+    settings: Settings,
+) -> None:
+    sessions, owner, report, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "adapter-retry"
+    )
+    failed_client = FakeClient(TimeoutError("private source and prompt"))
+    assert await execute_analysis(
+        sessions, owner, report, job_id, 1, OpenAIAnalysisAdapter(settings, failed_client)
+    )
+    detail = await AnalysisJobServices(sessions, "s" * 32).detail(owner, report, job_id)
+    assert detail.failure is not None and detail.failure.code == "provider_timeout"
+    assert detail.failure.retryable is True
+    assert "private source" not in str(detail)
+    service = AnalysisJobServices(sessions, "s" * 32, publisher=lambda *_: None)
+    retried, replayed = await service.retry(
+        owner, report, job_id, RetryAnalysisJobRequest(expected_attempt_count=1), "retry-key"
+    )
+    assert retried.state == "queued" and retried.attempt_count == 2 and not replayed
+    repeated, replayed = await service.retry(
+        owner, report, job_id, RetryAnalysisJobRequest(expected_attempt_count=1), "retry-key"
+    )
+    assert repeated.id == retried.id and replayed
+    good_client = FakeClient(response())
+    runner = OpenAIAnalysisAdapter(settings, good_client)
+    assert not await execute_analysis(sessions, owner, report, job_id, 1, runner)
+    assert await execute_analysis(sessions, owner, report, job_id, 2, runner)
+    assert not await execute_analysis(sessions, owner, report, job_id, 2, runner)
+    assert len(good_client.responses.calls) == 1
+    async with sessions() as session:
+        results = (
+            await session.scalars(
+                select(AnalysisResult).where(
+                    AnalysisResult.job_id == job_id,
+                )
+            )
+        ).all()
+        attempts = (
+            await session.scalars(
+                select(AnalysisJobAttempt)
+                .where(
+                    AnalysisJobAttempt.job_id == job_id,
+                )
+                .order_by(AnalysisJobAttempt.attempt_ordinal)
+            )
+        ).all()
+        assert len(results) == 1
+        assert [attempt.state for attempt in attempts] == ["failed", "succeeded"]
+
+
+@pytest.mark.asyncio
+async def test_provider_foreign_reference_fails_before_persistence(
+    concurrent_engine: AsyncEngine,
+    settings: Settings,
+) -> None:
+    sessions, owner, report, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "adapter-foreign"
+    )
+    payload = wire_payload()
+    payload["summary"][0]["metric_ids"] = [str(uuid4())]
+    runner = OpenAIAnalysisAdapter(
+        settings, FakeClient(response(parsed=WireOutput.model_validate(payload)))
+    )
+    assert await execute_analysis(sessions, owner, report, job_id, 1, runner)
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.failure_code == "invalid_structured_output"
+        assert job.current_result_id is None
+        assert (
+            await session.scalars(
+                select(AnalysisResult).where(
+                    AnalysisResult.job_id == job_id,
+                )
+            )
+        ).all() == []
+
+
+@pytest.mark.asyncio
+async def test_changed_dataset_blocks_provider_request(
+    concurrent_engine: AsyncEngine,
+    settings: Settings,
+) -> None:
+    sessions, owner, report_id, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "adapter-dataset-stale"
+    )
+    async with sessions.begin() as session:
+        report = await session.get(Report, report_id)
+        assert report is not None
+        report.current_dataset_id = None
+        report.current_metric_result_set_id = None
+    client = FakeClient(response())
+    assert await execute_analysis(
+        sessions, owner, report_id, job_id, 1, OpenAIAnalysisAdapter(settings, client)
+    )
+    assert client.responses.calls == []
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.failure_code == "stale_result"
+        assert job.current_result_id is None
+
+
+@pytest.mark.asyncio
+async def test_production_task_constructs_and_closes_openai_client(
+    concurrent_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_settings_data: dict[str, Any],
+) -> None:
+    sessions, owner, report, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "production-task"
+    )
+    calls: list[dict[str, Any]] = []
+    closed: list[bool] = []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append(kwargs)
+            self.responses = FakeClient(response()).responses
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    for name, value in valid_settings_data.items():
+        monkeypatch.setenv(name, str(value).lower() if isinstance(value, bool) else str(value))
+    monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    monkeypatch.setenv("AI_LOCAL_DISABLE_DOTENV", "1")
+    monkeypatch.setattr("app.jobs.analysis_worker.AsyncOpenAI", FakeOpenAI)
+    await asyncio.to_thread(analysis_task.run, str(owner), str(report), str(job_id), 1)
+    assert len(calls) == 1 and calls[0]["max_retries"] == 0
+    assert calls[0]["timeout"] == 60
+    assert closed == [True]
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.state == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_production_configuration_failure_is_persisted_safely(
+    concurrent_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_settings_data: dict[str, Any],
+) -> None:
+    sessions, owner, report, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "production-config-failure"
+    )
+    for name, value in valid_settings_data.items():
+        monkeypatch.setenv(name, str(value).lower() if isinstance(value, bool) else str(value))
+    monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    monkeypatch.setenv("AI_LOCAL_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("OPENAI_API_KEY")
+    await asyncio.to_thread(analysis_task.run, str(owner), str(report), str(job_id), 1)
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.state == "failed"
+        assert job.failure_code == "provider_unavailable"
+        assert job.failure_retryable is False
+        assert job.failure_message == "Analysis could not be completed."

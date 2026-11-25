@@ -13,6 +13,8 @@ from app.api.analysis_job_schemas import (
     AnalysisJobDetail,
     AnalysisJobEnvelope,
     AnalysisJobSummary,
+    AnalysisResultItemPublic,
+    AnalysisResultPublic,
     CreateAnalysisJobRequest,
     JobFailure,
     RetryAnalysisJobRequest,
@@ -39,6 +41,7 @@ class FakeJobs:
     def __init__(self, owner: UUID, report: UUID) -> None:
         self.owner, self.report = owner, report
         self.job_id = uuid4()
+        self.result_id = uuid4()
         self.state = "queued"
         self.ordinal = 1
         self.created = datetime.now(UTC)
@@ -59,6 +62,32 @@ class FakeJobs:
             if self.state == "failed"
             else None
         )
+        result = (
+            AnalysisResultPublic(
+                id=self.result_id,
+                model_identifier="provider-actual-model",
+                prompt_version="analysis-prompt-v1",
+                request_provenance=(
+                    "response=resp_safe;prompt=analysis-prompt-v1;"
+                    "context=analysis-context-v1;digest=sha256:" + "a" * 64
+                ),
+                created_at=self.created,
+                summary=[
+                    AnalysisResultItemPublic(
+                        section="summary",
+                        ordinal=1,
+                        classification="observation",
+                        content="Performance was stable.",
+                    )
+                ],
+                findings=[],
+                anomalies=[],
+                recommendations=[],
+                data_gaps=[],
+            )
+            if self.state == "succeeded"
+            else None
+        )
         return AnalysisJobDetail(
             id=self.job_id,
             report_id=self.report,
@@ -71,7 +100,8 @@ class FakeJobs:
             metric_result_set_id=uuid4(),
             draft_id=uuid4(),
             draft_revision=1,
-            result_id=uuid4() if self.state == "succeeded" else None,
+            result_id=self.result_id if self.state == "succeeded" else None,
+            result=result,
             attempts=[
                 AnalysisAttemptDetail(
                     ordinal=self.ordinal,
@@ -189,6 +219,13 @@ def test_analysis_job_http_states_replay_retry_pagination_and_redaction(settings
             assert response.status_code == 200 and response.json()["data"]["state"] == state
             if state == "failed":
                 assert response.json()["data"]["failure"]["code"] == "provider_unavailable"
+            if state == "succeeded":
+                result = response.json()["data"]["result"]
+                assert result["model_identifier"] == "provider-actual-model"
+                assert result["prompt_version"] == "analysis-prompt-v1"
+                assert result["summary"][0]["content"] == "Performance was stable."
+                assert "resp_safe" in result["request_provenance"]
+                assert "numeric_source_identity" not in result
         page = client.get(base, params={"limit": 1})
         assert page.status_code == 200 and page.json()["page"]["limit"] == 1
         assert (
@@ -198,6 +235,19 @@ def test_analysis_job_http_states_replay_retry_pagination_and_redaction(settings
         foreign = client.get(f"/api/v1/reports/{uuid4()}/analysis-jobs/{fake.job_id}")
         missing = client.get(f"{base}/{uuid4()}")
         assert foreign.json()["error"]["code"] == missing.json()["error"]["code"]
+        app.dependency_overrides[get_authenticated_principal] = lambda: AuthenticatedPrincipal(
+            id=uuid4()
+        )
+        foreign_owner = client.get(f"{base}/{fake.job_id}")
+        foreign_retry = client.post(
+            f"{base}/{fake.job_id}/retry",
+            json={"expected_attempt_count": 1},
+            headers={"Idempotency-Key": "foreign"},
+        )
+        assert foreign_owner.status_code == foreign_retry.status_code == 404
+        app.dependency_overrides[get_authenticated_principal] = lambda: AuthenticatedPrincipal(
+            id=owner
+        )
         rejected = client.post(
             f"{base}/{fake.job_id}/retry",
             json={"expected_attempt_count": 2},
@@ -226,13 +276,25 @@ def test_analysis_job_http_states_replay_retry_pagination_and_redaction(settings
             ).status_code
             == 409
         )
-        for response in (created, replay, stale, foreign, rejected, retried):
+        for response in (
+            created,
+            replay,
+            stale,
+            foreign,
+            foreign_owner,
+            foreign_retry,
+            rejected,
+            retried,
+        ):
             for forbidden in (
                 "private",
                 "provider_payload",
                 "credential",
                 "stack trace",
                 "object_key",
+                "OPENAI_API_KEY",
+                "<untrusted_analysis_data>",
+                "raw source",
             ):
                 assert forbidden not in response.text
         paths = client.get("/openapi.json").json()["paths"]

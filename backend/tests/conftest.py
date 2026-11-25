@@ -31,6 +31,9 @@ def valid_settings_data() -> dict[str, Any]:
         "GENERATED_PDF_MAX_BYTES": 26_214_400,
         "OBJECT_STORAGE_TIMEOUT_SECONDS": 10,
         "REPORT_CURSOR_SIGNING_KEY": "unit-test-report-cursor-signing-key-0001",
+        "OPENAI_API_KEY": "unit-test-openai-key",
+        "OPENAI_MODEL": "unit-test-model",
+        "OPENAI_TIMEOUT_SECONDS": 60,
     }
 
 

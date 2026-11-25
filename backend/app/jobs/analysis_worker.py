@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from openai import AsyncOpenAI
+from pydantic import Field, SecretStr, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.ai.context import ContextBudgetExceeded, PreparedContext, prepare_context
-from app.ai.output import SECTIONS, StructuredOutput, validate_output
+from app.ai.errors import AnalysisExecutionFailure
+from app.ai.openai_adapter import OpenAIAnalysisAdapter, OpenAIClient
+from app.ai.output import SECTIONS, RunnerOutput, validate_output
 from app.core.config import Settings
 from app.db.models import (
     AnalysisItemMetricReference,
@@ -29,35 +34,6 @@ from app.db.repositories import (
 )
 from app.db.session import create_session_factory, transaction
 from app.jobs.celery_app import celery_app
-
-SAFE_FAILURES = frozenset(
-    {
-        "provider_timeout",
-        "provider_refusal",
-        "provider_unavailable",
-        "incomplete_response",
-        "invalid_structured_output",
-        "stale_result",
-    }
-)
-
-
-class AnalysisExecutionFailure(Exception):
-    def __init__(self, code: str, retryable: bool = True) -> None:
-        if code not in SAFE_FAILURES:
-            raise ValueError("unsupported analysis failure")
-        self.code = code
-        self.retryable = retryable
-        super().__init__(code)
-
-
-class RunnerOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    model_identifier: str = Field(min_length=1, max_length=255)
-    prompt_version: str = Field(min_length=1, max_length=64)
-    request_provenance: str = Field(min_length=1, max_length=500)
-    response: StructuredOutput
-
 
 AnalysisRunner = Callable[[PreparedContext], Awaitable[RunnerOutput | dict[str, object]]]
 
@@ -221,17 +197,42 @@ async def fail_stale_running(
 
 @celery_app.task(name="analysis.execute", ignore_result=True)  # type: ignore[misc]
 def analysis_task(owner_id: str, report_id: str, job_id: str, ordinal: int) -> None:
-    settings = Settings()
+    class DatabaseSettings(BaseSettings):
+        model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=True)
+        database_url: SecretStr = Field(validation_alias="DATABASE_URL")
+
+    database = DatabaseSettings()
 
     async def run() -> None:
-        engine = create_async_engine(settings.database_url.get_secret_value())
+        engine = create_async_engine(database.database_url.get_secret_value())
         try:
+
+            async def production_runner(context: PreparedContext) -> RunnerOutput:
+                try:
+                    settings = Settings()
+                except ValidationError as error:
+                    raise AnalysisExecutionFailure(
+                        "provider_unavailable", retryable=False
+                    ) from error
+                client = AsyncOpenAI(
+                    api_key=settings.openai_api_key.get_secret_value(),
+                    timeout=settings.openai_timeout_seconds,
+                    max_retries=0,
+                )
+                try:
+                    return await OpenAIAnalysisAdapter(settings, cast(OpenAIClient, client))(
+                        context
+                    )
+                finally:
+                    await client.close()
+
             await execute_analysis(
                 create_session_factory(engine),
                 UUID(owner_id),
                 UUID(report_id),
                 UUID(job_id),
                 ordinal,
+                runner=production_runner,
             )
         finally:
             await engine.dispose()

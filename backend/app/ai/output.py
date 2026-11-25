@@ -74,6 +74,13 @@ class ValidatedOutput(StrictModel):
     sections: StructuredOutput
 
 
+class RunnerOutput(StrictModel):
+    model_identifier: str = Field(min_length=1, max_length=255)
+    prompt_version: str = Field(min_length=1, max_length=64)
+    request_provenance: str = Field(min_length=1, max_length=500)
+    response: StructuredOutput
+
+
 def validate_output(
     response: StructuredOutput,
     context: PreparedContext,

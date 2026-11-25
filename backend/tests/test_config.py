@@ -46,6 +46,41 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
     assert settings.analysis_publish_timeout_seconds == 3
     assert settings.analysis_task_time_limit_seconds == 300
     assert settings.analysis_stale_running_seconds == 600
+    assert settings.openai_model == "unit-test-model"
+    assert settings.openai_timeout_seconds == 60
+    assert "unit-test-openai-key" not in repr(settings)
+
+
+@pytest.mark.parametrize("name", ["OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_TIMEOUT_SECONDS"])
+def test_openai_settings_are_required(
+    valid_settings_data: dict[str, Any], name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(name, raising=False)
+    data = dict(valid_settings_data)
+    data.pop(name)
+    with pytest.raises(ValidationError) as error:
+        build(data)
+    assert "unit-test-openai-key" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("OPENAI_API_KEY", ""),
+        ("OPENAI_API_KEY", "CHANGE_ME_KEY"),
+        ("OPENAI_MODEL", ""),
+        ("OPENAI_MODEL", "  "),
+        ("OPENAI_TIMEOUT_SECONDS", 0),
+        ("OPENAI_TIMEOUT_SECONDS", 300),
+        ("OPENAI_TIMEOUT_SECONDS", 295),
+    ],
+)
+def test_openai_settings_reject_blank_and_unsafe_values(
+    valid_settings_data: dict[str, Any], name: str, value: str | int
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        build({**valid_settings_data, name: value})
+    assert "unit-test-openai-key" not in str(error.value)
 
 
 @pytest.mark.parametrize(
