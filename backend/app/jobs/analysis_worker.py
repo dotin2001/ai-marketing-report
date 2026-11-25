@@ -5,15 +5,21 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.ai.context import ContextBudgetExceeded, PreparedContext, prepare_context
+from app.ai.output import SECTIONS, StructuredOutput, validate_output
 from app.core.config import Settings
-from app.db.models import AnalysisJob, AnalysisResult, AnalysisResultItem, MetricResultSet
+from app.db.models import (
+    AnalysisItemMetricReference,
+    AnalysisJob,
+    AnalysisResult,
+    AnalysisResultItem,
+)
 from app.db.repositories import (
     ConcurrencyConflict,
     claim_analysis_job,
@@ -45,30 +51,18 @@ class AnalysisExecutionFailure(Exception):
         super().__init__(code)
 
 
-class AnalysisItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    section: Literal["summary", "findings", "anomalies", "recommendations", "data_gaps"]
-    ordinal: int = Field(ge=1)
-    classification: Literal["observation", "hypothesis", "user_claim"]
-    content: str = Field(min_length=1)
-
-
-class AnalysisExecutionResult(BaseModel):
+class RunnerOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_identifier: str = Field(min_length=1, max_length=255)
     prompt_version: str = Field(min_length=1, max_length=64)
     request_provenance: str = Field(min_length=1, max_length=500)
-    semantic_input_identity: bytes = Field(min_length=32, max_length=32)
-    numeric_source_identity: bytes = Field(min_length=32, max_length=32)
-    items: list[AnalysisItem] = Field(min_length=1)
+    response: StructuredOutput
 
 
-AnalysisRunner = Callable[[AsyncSession, AnalysisJob], Awaitable[AnalysisExecutionResult]]
+AnalysisRunner = Callable[[PreparedContext], Awaitable[RunnerOutput | dict[str, object]]]
 
 
-async def unavailable_executor(
-    _session: AsyncSession, _job: AnalysisJob
-) -> AnalysisExecutionResult:
+async def unavailable_executor(_context: PreparedContext) -> RunnerOutput:
     raise AnalysisExecutionFailure("provider_unavailable")
 
 
@@ -101,42 +95,66 @@ async def execute_analysis(
             )
             if job is None:
                 raise AnalysisExecutionFailure("stale_result", retryable=False)
-            execution = AnalysisExecutionResult.model_validate(await runner(session, job))
-            numeric_identity = await session.scalar(
-                select(MetricResultSet.identity).where(
-                    MetricResultSet.id == job.metric_result_set_id,
-                    MetricResultSet.owner_id == owner_id,
-                    MetricResultSet.report_id == report_id,
-                )
+            context = await prepare_context(session, job)
+        raw = await runner(context)
+        try:
+            execution = RunnerOutput.model_validate(
+                raw.model_dump() if isinstance(raw, RunnerOutput) else raw
             )
-            if (
-                execution.semantic_input_identity != job.semantic_input_identity
-                or execution.numeric_source_identity != numeric_identity
-            ):
-                raise AnalysisExecutionFailure("invalid_structured_output", retryable=False)
+            validated = validate_output(
+                execution.response,
+                context,
+                model_identifier=execution.model_identifier,
+                prompt_version=execution.prompt_version,
+                request_provenance=execution.request_provenance,
+            )
+        except (ValidationError, ValueError) as error:
+            raise AnalysisExecutionFailure("invalid_structured_output", retryable=False) from error
         result = AnalysisResult(
             owner_id=owner_id,
             report_id=report_id,
             job_id=job_id,
-            semantic_input_identity=execution.semantic_input_identity,
-            numeric_source_identity=execution.numeric_source_identity,
-            model_identifier=execution.model_identifier,
-            prompt_version=execution.prompt_version,
-            request_provenance=execution.request_provenance,
+            semantic_input_identity=bytes.fromhex(validated.semantic_input_identity),
+            numeric_source_identity=bytes.fromhex(validated.numeric_source_identity),
+            model_identifier=validated.model_identifier,
+            prompt_version=validated.prompt_version,
+            request_provenance=validated.request_provenance,
         )
-        items = [
-            AnalysisResultItem(
-                owner_id=owner_id,
-                report_id=report_id,
-                result_id=result.id,
-                section=item.section,
-                ordinal=item.ordinal,
-                classification=item.classification,
-                content=item.content,
-            )
-            for item in execution.items
-        ]
+        items: list[AnalysisResultItem] = []
+        references: list[AnalysisItemMetricReference] = []
+        for section in SECTIONS:
+            for item in getattr(validated.sections, section):
+                row = AnalysisResultItem(
+                    id=uuid4(),
+                    owner_id=owner_id,
+                    report_id=report_id,
+                    result_id=result.id,
+                    section=section,
+                    ordinal=item.ordinal,
+                    classification=item.classification,
+                    content=item.content,
+                )
+                items.append(row)
+                references.extend(
+                    AnalysisItemMetricReference(
+                        item_id=row.id,
+                        metric_result_id=metric_id,
+                        owner_id=owner_id,
+                        report_id=report_id,
+                    )
+                    for metric_id in item.metric_ids
+                )
         async with transaction(sessions) as session:
+            current_job = await session.scalar(
+                select(AnalysisJob).where(
+                    AnalysisJob.id == job_id,
+                    AnalysisJob.owner_id == owner_id,
+                    AnalysisJob.report_id == report_id,
+                )
+            )
+            if current_job is None:
+                raise ConcurrencyConflict("analysis job is stale")
+            await prepare_context(session, current_job)
             await finish_analysis_job(
                 session,
                 owner_id=owner_id,
@@ -145,12 +163,15 @@ async def execute_analysis(
                 expected_attempt_count=ordinal,
                 result=result,
                 items=items,
+                metric_references=references,
             )
-    except ConcurrencyConflict:
-        return False
     except Exception as error:
         if isinstance(error, AnalysisExecutionFailure):
             code, retryable = error.code, error.retryable
+        elif isinstance(error, ConcurrencyConflict):
+            code, retryable = "stale_result", False
+        elif isinstance(error, ContextBudgetExceeded):
+            code, retryable = "provider_unavailable", False
         else:
             code, retryable = "provider_unavailable", True
         try:

@@ -164,6 +164,86 @@ async def _detail(session: AsyncSession, job: AnalysisJob) -> AnalysisJobDetail:
     )
 
 
+async def current_analysis_input(
+    session: AsyncSession,
+    report: Report,
+    expected_revision: int,
+    dataset_id: UUID | None = None,
+    metric_result_set_id: UUID | None = None,
+) -> tuple[ReportDraft, CanonicalDataset, MetricResultSet, bytes]:
+    draft = await session.scalar(
+        select(ReportDraft).where(
+            ReportDraft.report_id == report.id,
+            ReportDraft.owner_id == report.owner_id,
+            ReportDraft.is_active.is_(True),
+        )
+    )
+    if (
+        draft is None
+        or draft.revision != expected_revision
+        or report.current_dataset_id is None
+        or report.current_metric_result_set_id is None
+        or (dataset_id is not None and dataset_id != report.current_dataset_id)
+        or (
+            metric_result_set_id is not None
+            and metric_result_set_id != report.current_metric_result_set_id
+        )
+    ):
+        raise ConcurrencyConflict("analysis input is stale")
+    dataset = await session.scalar(
+        select(CanonicalDataset).where(
+            CanonicalDataset.id == report.current_dataset_id,
+            CanonicalDataset.owner_id == report.owner_id,
+            CanonicalDataset.report_id == report.id,
+        )
+    )
+    metrics = await session.scalar(
+        select(MetricResultSet).where(
+            MetricResultSet.id == report.current_metric_result_set_id,
+            MetricResultSet.dataset_id == report.current_dataset_id,
+            MetricResultSet.owner_id == report.owner_id,
+            MetricResultSet.report_id == report.id,
+        )
+    )
+    if dataset is None or metrics is None:
+        raise ConcurrencyConflict("analysis inputs are unavailable")
+    objectives = list(
+        (
+            await session.scalars(
+                select(DraftObjective.content)
+                .where(
+                    DraftObjective.draft_id == draft.id,
+                    DraftObjective.owner_id == report.owner_id,
+                    DraftObjective.report_id == report.id,
+                )
+                .order_by(DraftObjective.ordinal)
+            )
+        ).all()
+    )
+    identity = sha256(
+        json.dumps(
+            {
+                "report": str(report.id),
+                "source": str(dataset.source_id),
+                "confirmation": str(dataset.confirmation_id),
+                "dataset": str(dataset.id),
+                "canonical": dataset.canonical_data_identity.hex(),
+                "metrics": str(metrics.id),
+                "metric_identity": metrics.identity.hex(),
+                "calculation_version": metrics.calculation_version,
+                "draft": str(draft.id),
+                "draft_revision": draft.revision,
+                "objectives_revision": draft.objectives_revision,
+                "objectives": objectives,
+                "period_revision": report.period_revision,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).digest()
+    return draft, dataset, metrics, identity
+
+
 class AnalysisJobServices:
     def __init__(
         self,
@@ -205,77 +285,9 @@ class AnalysisJobServices:
         dataset_id: UUID | None = None,
         metric_result_set_id: UUID | None = None,
     ) -> tuple[ReportDraft, CanonicalDataset, MetricResultSet, bytes]:
-        draft = await session.scalar(
-            select(ReportDraft).where(
-                ReportDraft.report_id == report.id,
-                ReportDraft.owner_id == report.owner_id,
-                ReportDraft.is_active.is_(True),
-            )
+        return await current_analysis_input(
+            session, report, expected_revision, dataset_id, metric_result_set_id
         )
-        if (
-            draft is None
-            or draft.revision != expected_revision
-            or report.current_dataset_id is None
-            or report.current_metric_result_set_id is None
-            or (dataset_id is not None and dataset_id != report.current_dataset_id)
-            or (
-                metric_result_set_id is not None
-                and metric_result_set_id != report.current_metric_result_set_id
-            )
-        ):
-            raise ConcurrencyConflict("analysis input is stale")
-        dataset = await session.scalar(
-            select(CanonicalDataset).where(
-                CanonicalDataset.id == report.current_dataset_id,
-                CanonicalDataset.owner_id == report.owner_id,
-                CanonicalDataset.report_id == report.id,
-            )
-        )
-        metrics = await session.scalar(
-            select(MetricResultSet).where(
-                MetricResultSet.id == report.current_metric_result_set_id,
-                MetricResultSet.dataset_id == report.current_dataset_id,
-                MetricResultSet.owner_id == report.owner_id,
-                MetricResultSet.report_id == report.id,
-            )
-        )
-        if dataset is None or metrics is None:
-            raise ConcurrencyConflict("analysis inputs are unavailable")
-        objectives = list(
-            (
-                await session.scalars(
-                    select(DraftObjective.content)
-                    .where(
-                        DraftObjective.draft_id == draft.id,
-                        DraftObjective.owner_id == report.owner_id,
-                        DraftObjective.report_id == report.id,
-                    )
-                    .order_by(DraftObjective.ordinal)
-                )
-            ).all()
-        )
-        identity = sha256(
-            json.dumps(
-                {
-                    "report": str(report.id),
-                    "source": str(dataset.source_id),
-                    "confirmation": str(dataset.confirmation_id),
-                    "dataset": str(dataset.id),
-                    "canonical": dataset.canonical_data_identity.hex(),
-                    "metrics": str(metrics.id),
-                    "metric_identity": metrics.identity.hex(),
-                    "calculation_version": metrics.calculation_version,
-                    "draft": str(draft.id),
-                    "draft_revision": draft.revision,
-                    "objectives_revision": draft.objectives_revision,
-                    "objectives": objectives,
-                    "period_revision": report.period_revision,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).digest()
-        return draft, dataset, metrics, identity
 
     def _dispatch(self, owner_id: UUID, report_id: UUID, job_id: UUID, ordinal: int) -> None:
         try:

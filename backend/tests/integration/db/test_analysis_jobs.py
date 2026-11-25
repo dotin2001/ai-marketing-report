@@ -38,6 +38,7 @@ from app.db.repositories import (
     stale_running_analysis_attempts,
 )
 from app.db.testing import validate_test_database
+from app.domain.analysis_jobs import current_analysis_input
 from tests.integration.db.conftest import seed_report
 from tests.integration.db.test_datasets_and_metrics import seed_dataset_metric_aggregate
 
@@ -74,7 +75,9 @@ async def seed_analysis_job(
         )
     )
     assert draft is not None
-    identity = sha256(f"analysis-{subject}".encode()).digest()
+    _draft, _dataset, _metrics, identity = await current_analysis_input(
+        session, report, draft.revision, dataset.id, metric_set.id
+    )
     idempotency = None
     if raw_key is not None:
         idempotency = await resolve_idempotency(
@@ -95,7 +98,7 @@ async def seed_analysis_job(
         metric_result_set_id=metric_set.id,
         draft_id=draft.id,
         draft_revision=draft.revision,
-        objectives_revision=draft.revision,
+        objectives_revision=draft.objectives_revision,
         idempotency=idempotency,
     )
     return report, dataset, metric_set, draft, job
