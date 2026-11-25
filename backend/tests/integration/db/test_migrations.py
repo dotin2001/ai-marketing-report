@@ -4,6 +4,7 @@ import asyncio
 import os
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 import pytest
 from alembic.autogenerate import compare_metadata
@@ -18,6 +19,7 @@ from alembic import command
 from app.db import Base
 from app.db.models import Principal
 from app.db.testing import validate_test_database
+from tests.integration.db.test_datasets_and_metrics import seed_dataset_metric_aggregate
 
 pytestmark = pytest.mark.postgres
 BACKEND = Path(__file__).parents[3]
@@ -32,7 +34,7 @@ def test_migration_scaffold_loads_without_connecting() -> None:
     scripts = ScriptDirectory.from_config(config)
     assert scripts.dir == str(BACKEND / "alembic")
     assert len(scripts.get_heads()) == 1
-    assert len(list(scripts.walk_revisions())) == 4
+    assert len(list(scripts.walk_revisions())) == 5
     assert "invalid:invalid" in (config.get_main_option("sqlalchemy.url") or "")
 
 
@@ -108,3 +110,53 @@ async def test_empty_roundtrip_populated_refusal_and_schema_parity() -> None:
         await session.execute(delete(Principal).where(Principal.id == principal.id))
         await session.commit()
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_metric_group_migration_backfills_historical_results() -> None:
+    target = validate_test_database(
+        app_env=os.environ.get("APP_ENV"),
+        test_database_url=os.environ.get("TEST_DATABASE_URL"),
+        database_url=os.environ.get("DATABASE_URL"),
+    )
+    schema = "gh12_backfill_" + uuid4().hex
+    admin = create_async_engine(target.url)
+    async with admin.begin() as connection:
+        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    previous_options = os.environ.get("PGOPTIONS")
+    previous_migration_url = os.environ.get("MIGRATION_DATABASE_URL")
+    try:
+        os.environ["PGOPTIONS"] = f"-csearch_path={schema}"
+        os.environ["MIGRATION_DATABASE_URL"] = target.url
+        await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+        engine = create_async_engine(
+            target.url, connect_args={"options": f"-csearch_path={schema}"}
+        )
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                _, _, _, _, result = await seed_dataset_metric_aggregate(
+                    session, subject=str(uuid4())
+                )
+                await session.commit()
+            await asyncio.to_thread(command.downgrade, alembic_config(), "aa10b0c0d0e0")
+            await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+            async with engine.connect() as connection:
+                restored = await connection.execute(
+                    text("SELECT group_identity, campaign_name FROM metric_results WHERE id = :id"),
+                    {"id": result.id},
+                )
+                assert restored.one() == ("report", None)
+        finally:
+            await engine.dispose()
+    finally:
+        if previous_options is None:
+            os.environ.pop("PGOPTIONS", None)
+        else:
+            os.environ["PGOPTIONS"] = previous_options
+        if previous_migration_url is None:
+            os.environ.pop("MIGRATION_DATABASE_URL", None)
+        else:
+            os.environ["MIGRATION_DATABASE_URL"] = previous_migration_url
+        async with admin.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await admin.dispose()

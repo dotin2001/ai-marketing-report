@@ -80,6 +80,9 @@ class FakeConfirmation:
             period_end=date(2026, 1, 31),
             period_revision=1,
             row_count=2,
+            accepted_row_count=2,
+            rejected_row_count=0,
+            row_count_explanation="All source records were accepted, including warned duplicates.",
             currencies=["USD"],
             mappings=[ColumnMapping(source_column_ordinal=0, canonical_field="date")],
         )

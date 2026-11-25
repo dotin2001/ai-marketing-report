@@ -25,6 +25,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
@@ -948,6 +949,8 @@ class MetricResult(UUIDPrimaryKeyMixin, Base):
     metric_name: Mapped[str] = mapped_column(String(16), nullable=False)
     availability: Mapped[str] = mapped_column(String(16), nullable=False)
     scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_identity: Mapped[str] = mapped_column(String(64), nullable=False, default="report")
+    campaign_name: Mapped[str | None] = mapped_column(Text)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     currency: Mapped[str | None] = mapped_column(String(3))
@@ -967,15 +970,20 @@ class MetricResult(UUIDPrimaryKeyMixin, Base):
             name="fk_metric_results_result_set",
             ondelete="RESTRICT",
         ),
-        UniqueConstraint(
+        Index(
+            "uq_metric_results_group_currency",
             "result_set_id",
             "metric_name",
-            "scope",
-            "currency",
-            name="uq_metric_results_metric_scope",
+            "group_identity",
+            func.coalesce(currency, ""),
+            unique=True,
         ),
         UniqueConstraint("id", "report_id", "owner_id", name="uq_metric_results_aggregate"),
         CheckConstraint("metric_name IN ('ctr','cpc','cpm','cpl')", name="metric_name_allowed"),
+        CheckConstraint(
+            "(scope = 'campaign' AND campaign_name IS NOT NULL AND btrim(campaign_name) <> '' AND group_identity <> 'report') OR (scope IN ('report','currency') AND campaign_name IS NULL AND group_identity = scope)",
+            name="group_contract",
+        ),
         CheckConstraint("availability IN ('available','unavailable')", name="availability_allowed"),
         CheckConstraint("period_end >= period_start", name="period_inclusive"),
         CheckConstraint("currency IS NULL OR currency ~ '^[A-Z]{3}$'", name="currency_shape"),

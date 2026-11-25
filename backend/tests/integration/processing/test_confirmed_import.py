@@ -29,11 +29,14 @@ from app.db.models import (
     ConfirmedImport,
     DatasetCurrency,
     ImportColumnMapping,
+    MetricResult,
+    MetricResultSet,
     Report,
 )
-from app.db.repositories import IdempotencyConflict
+from app.db.repositories import ConcurrencyConflict, IdempotencyConflict
 from app.db.testing import validate_test_database
 from app.domain.assets import AssetServices, ResourceNotFound
+from app.domain.dataset_reads import DatasetReadServices
 from app.domain.import_confirmation import (
     BlockedImportValidation,
     ImportConfirmationServices,
@@ -41,6 +44,7 @@ from app.domain.import_confirmation import (
     WarningAcknowledgementRequired,
 )
 from app.domain.import_review import ImportReviewServices
+from app.domain.metrics import ensure_current_metrics
 from app.domain.sources import SourceServices
 from app.storage.coordinator import StorageCoordinator
 from app.storage.fake import FakeObjectStorage
@@ -164,6 +168,23 @@ async def test_confirmation_commits_exact_rows_currency_and_replay(
     )
     assert replayed is False
     assert detail.row_count == 3
+    assert detail.accepted_row_count == 3 and detail.rejected_row_count == 0
+    assert detail.metric_result_set_id is not None
+    metric_view = DatasetReadServices(prepared.confirm.sessions)
+    public_metrics, result_set_id = await metric_view.metrics(
+        prepared.owner_id, prepared.report_id, detail.dataset_id, None, None, None
+    )
+    assert result_set_id == detail.metric_result_set_id
+    assert public_metrics[0].metric_name == "ctr" and public_metrics[0].scope == "report"
+    cross_currency = next(
+        item
+        for item in public_metrics
+        if item.metric_name == "cpc" and item.scope == "report" and item.currency is None
+    )
+    assert cross_currency.availability == "unavailable"
+    assert cross_currency.unavailable_reason == "incompatible_currency"
+    assert "value" not in cross_currency.model_dump()
+    assert "spend" not in cross_currency.inputs
     assert detail.currencies == ["EUR", "USD"]
     assert detail.source_checksum_sha256 == prepared.validation.source_checksum_sha256
     assert [item.canonical_field for item in detail.mappings] == [
@@ -182,6 +203,7 @@ async def test_confirmation_commits_exact_rows_currency_and_replay(
         prepared.assets,
     )
     assert replayed and replay.id == detail.id and replay.dataset_id == detail.dataset_id
+    assert replay.metric_result_set_id == detail.metric_result_set_id
     rows = list(
         (
             await db_session.scalars(
@@ -204,6 +226,8 @@ async def test_confirmation_commits_exact_rows_currency_and_replay(
     assert currencies == {"USD", "EUR"}
     assert await db_session.scalar(select(func.count()).select_from(ConfirmedImport)) == 1
     assert await db_session.scalar(select(func.count()).select_from(CanonicalDataset)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(MetricResultSet)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(MetricResult)) > 0
     assert (
         await db_session.scalar(
             select(func.count())
@@ -224,6 +248,14 @@ async def test_confirmation_commits_exact_rows_currency_and_replay(
     await prepared.sources.attach_text(
         prepared.owner_id, prepared.report_id, "new source", "later-source"
     )
+    with pytest.raises(ConcurrencyConflict):
+        await ensure_current_metrics(
+            db_session,
+            owner_id=prepared.owner_id,
+            report_id=prepared.report_id,
+            dataset_id=detail.dataset_id,
+        )
+    assert await db_session.scalar(select(func.count()).select_from(MetricResultSet)) == 1
     historical, replayed = await prepared.confirm.confirm(
         prepared.owner_id,
         prepared.report_id,
@@ -253,6 +285,8 @@ async def test_errors_warnings_and_stale_period_do_not_commit(
         db_session, settings, b"date,campaign,currency,clicks,spend\n01/02/2026,A,USD,1,0.10\n"
     )
     assert invalid.validation.confirmation_blocked
+    assert invalid.validation.accepted_row_count == 0
+    assert invalid.validation.rejected_row_count == invalid.validation.total_records
     assert invalid.validation.issues[0].code == "ambiguous_date"
     with pytest.raises(BlockedImportValidation):
         await invalid.confirm.confirm(
@@ -264,6 +298,7 @@ async def test_errors_warnings_and_stale_period_do_not_commit(
             invalid.assets,
         )
     assert await db_session.scalar(select(func.count()).select_from(CanonicalDataset)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(MetricResultSet)) == 0
     warning = await prepare_import(
         db_session,
         settings,
@@ -304,6 +339,7 @@ async def test_errors_warnings_and_stale_period_do_not_commit(
             warning.assets,
         )
     assert await db_session.scalar(select(func.count()).select_from(CanonicalDataset)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(MetricResultSet)) == 0
 
 
 @pytest.mark.asyncio
@@ -419,6 +455,49 @@ async def test_atomic_rollback_and_owner_scope(
 
 
 @pytest.mark.asyncio
+async def test_metric_failure_rolls_back_confirmation(
+    db_session: AsyncSession,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = await prepare_import(
+        db_session,
+        settings,
+        b"date,campaign,currency,clicks,spend\n2026-01-01,A,USD,1,0.10\n",
+    )
+    import app.domain.import_confirmation as module
+
+    original = module.ensure_current_metrics
+
+    async def fail_metrics(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated metric failure")
+
+    monkeypatch.setattr(module, "ensure_current_metrics", fail_metrics)
+    with pytest.raises(RuntimeError, match="simulated metric failure"):
+        await prepared.confirm.confirm(
+            prepared.owner_id,
+            prepared.report_id,
+            prepared.source_id,
+            command(prepared),
+            "metric-rollback",
+            prepared.assets,
+        )
+    assert await db_session.scalar(select(func.count()).select_from(ConfirmedImport)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(CanonicalDataset)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(MetricResultSet)) == 0
+    monkeypatch.setattr(module, "ensure_current_metrics", original)
+    detail, _ = await prepared.confirm.confirm(
+        prepared.owner_id,
+        prepared.report_id,
+        prepared.source_id,
+        command(prepared),
+        "metric-rollback",
+        prepared.assets,
+    )
+    assert detail.metric_result_set_id is not None
+
+
+@pytest.mark.asyncio
 async def test_concurrent_same_key_creates_one_confirmation(
     settings: Settings,
 ) -> None:
@@ -478,6 +557,7 @@ async def test_concurrent_same_key_creates_one_confirmation(
             async with AsyncSession(engine) as session:
                 assert await session.scalar(select(func.count()).select_from(ConfirmedImport)) == 1
                 assert await session.scalar(select(func.count()).select_from(CanonicalDataset)) == 1
+                assert await session.scalar(select(func.count()).select_from(MetricResultSet)) == 1
         finally:
             await engine.dispose()
     finally:

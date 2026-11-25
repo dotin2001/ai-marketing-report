@@ -22,6 +22,7 @@ from app.db.models import (
     ImportConfigurationRevision,
     ImportValidation,
     ImportValidationIssue,
+    MetricResultSet,
     Report,
 )
 from app.db.repositories import (
@@ -37,6 +38,7 @@ from app.db.repositories import (
 from app.db.session import transaction
 from app.domain.assets import AssetServices, ResourceNotFound
 from app.domain.datasets import CanonicalRowInput, commit_confirmed_dataset
+from app.domain.metrics import ensure_current_metrics
 from app.domain.reports import validate_idempotency_key
 from app.processing.csv_import import (
     CanonicalRowCandidate,
@@ -289,6 +291,14 @@ class ImportConfirmationServices:
                 )
             ).all()
         ]
+        metric_set = await session.scalar(
+            select(MetricResultSet).where(
+                MetricResultSet.dataset_id == dataset.id,
+                MetricResultSet.owner_id == owner_id,
+                MetricResultSet.report_id == report_id,
+                MetricResultSet.calculation_version == "kpi-v1",
+            )
+        )
         return ConfirmedImportDetail(
             id=confirmation.id,
             report_id=report_id,
@@ -305,6 +315,10 @@ class ImportConfirmationServices:
             period_end=confirmation.period_end,
             period_revision=validation.period_revision,
             row_count=dataset.row_count,
+            accepted_row_count=dataset.row_count,
+            rejected_row_count=0,
+            row_count_explanation="All source records were accepted, including warned duplicates.",
+            metric_result_set_id=metric_set.id if metric_set else None,
             currencies=currencies,
             mappings=mappings,
         )
@@ -433,12 +447,15 @@ class ImportConfirmationServices:
                     period_start=captured.period_start,
                     period_end=captured.period_end,
                 )
-            await commit_confirmed_dataset(
+            dataset = await commit_confirmed_dataset(
                 session,
                 owner_id=owner_id,
                 report_id=report_id,
                 confirmation_id=confirmation.id,
                 rows=rows,
+            )
+            await ensure_current_metrics(
+                session, owner_id=owner_id, report_id=report_id, dataset_id=dataset.id
             )
             await finalize_idempotency(
                 session,

@@ -311,6 +311,11 @@ class ImportReviewServices:
                 period_end=captured[1],
                 period_revision=captured[2],
                 total_records=cast(int, result.total_records),
+                accepted_row_count=0,
+                rejected_row_count=cast(int, result.total_records) if result.error_count else 0,
+                row_count_explanation="The whole revision awaits confirmation."
+                if result.error_count == 0
+                else "Blocking errors reject the whole revision for confirmation.",
                 error_count=result.error_count,
                 warning_count=result.warning_count,
                 confirmation_blocked=result.error_count > 0,

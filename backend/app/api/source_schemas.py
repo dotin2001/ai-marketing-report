@@ -113,6 +113,9 @@ class ImportValidationDetail(StrictModel):
     period_end: date
     period_revision: int
     total_records: int
+    accepted_row_count: int
+    rejected_row_count: int
+    row_count_explanation: str
     error_count: int
     warning_count: int
     confirmation_blocked: bool
@@ -147,6 +150,10 @@ class ConfirmedImportDetail(StrictModel):
     period_end: date
     period_revision: int
     row_count: int
+    accepted_row_count: int
+    rejected_row_count: int
+    row_count_explanation: str
+    metric_result_set_id: UUID | None = None
     currencies: list[str]
     mappings: list[ColumnMapping]
 

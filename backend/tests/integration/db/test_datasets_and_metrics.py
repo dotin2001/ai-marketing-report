@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import Numeric, Table, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db import Base
 from app.db.models import (
@@ -33,6 +33,8 @@ from app.db.repositories import (
     attach_source,
     confirm_import_validation,
 )
+from app.domain.assets import ResourceNotFound
+from app.domain.dataset_reads import DatasetReadServices
 from tests.integration.db.conftest import seed_report
 
 pytestmark = pytest.mark.postgres
@@ -291,6 +293,24 @@ async def test_zero_metric_is_available_and_mixed_or_nonfinite_variants_are_reje
             db_session.add(invalid)
             await db_session.flush()
 
+    duplicate_null_currency = MetricResult(
+        owner_id=report.owner_id,
+        report_id=report.id,
+        result_set_id=metric_set.id,
+        metric_name="ctr",
+        availability="available",
+        scope="report",
+        group_identity="report",
+        period_start=report.period_start,
+        period_end=report.period_end,
+        value=Decimal("0"),
+        unit="percent",
+    )
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(duplicate_null_currency)
+            await db_session.flush()
+
 
 @pytest.mark.asyncio
 async def test_dataset_and_metric_tables_reject_update_and_delete(db_session: AsyncSession) -> None:
@@ -389,3 +409,36 @@ def test_exact_numeric_types_are_not_binary_float() -> None:
     assert cast(Numeric[Decimal], metric_table.c.value.type).asdecimal is True
     assert Decimal("0.10") + Decimal("0.20") == Decimal("0.30")
     assert datetime.now(UTC).tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_dataset_reads_are_owner_scoped_and_ordered(db_session: AsyncSession) -> None:
+    report, dataset, _row, metric_set, _metric = await seed_dataset_metric_aggregate(
+        db_session, subject="read-owner"
+    )
+    assert db_session.bind is not None
+    service = DatasetReadServices(
+        async_sessionmaker(
+            db_session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+    )
+    detail = await service.detail(report.owner_id, report.id, dataset.id)
+    assert detail.accepted_row_count == 1 and detail.rejected_row_count == 0
+    assert detail.metric_result_set_id == metric_set.id
+    rows, cursor, total = await service.rows(report.owner_id, report.id, dataset.id, 0, 1)
+    assert total == 1 and cursor is None
+    assert rows[0].source_record_index == 1
+    assert rows[0].spend is None
+    metrics, result_set_id = await service.metrics(
+        report.owner_id, report.id, dataset.id, "report", None, None
+    )
+    assert result_set_id == metric_set.id
+    assert metrics[0].availability == "available"
+    assert metrics[0].inputs == {"clicks": "0"}
+    for call in (
+        service.detail(uuid4(), report.id, dataset.id),
+        service.rows(uuid4(), report.id, dataset.id, 0, 1),
+        service.metrics(uuid4(), report.id, dataset.id, None, None, None),
+    ):
+        with pytest.raises(ResourceNotFound):
+            await call
