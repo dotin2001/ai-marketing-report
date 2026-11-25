@@ -43,6 +43,28 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
     assert settings.source_preview_max_response_bytes == 65_536
     assert settings.generated_pdf_max_bytes == 26_214_400
     assert settings.object_storage_timeout_seconds == 10
+    assert settings.analysis_publish_timeout_seconds == 3
+    assert settings.analysis_task_time_limit_seconds == 300
+    assert settings.analysis_stale_running_seconds == 600
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("ANALYSIS_PUBLISH_TIMEOUT_SECONDS", 0),
+        ("ANALYSIS_PUBLISH_TIMEOUT_SECONDS", 31),
+        ("ANALYSIS_TASK_TIME_LIMIT_SECONDS", 9),
+        ("ANALYSIS_TASK_TIME_LIMIT_SECONDS", 3601),
+        ("ANALYSIS_STALE_RUNNING_SECONDS", 10),
+        ("ANALYSIS_STALE_RUNNING_SECONDS", 7201),
+        ("ANALYSIS_STALE_RUNNING_SECONDS", 300),
+    ],
+)
+def test_analysis_worker_limits_are_bounded(
+    valid_settings_data: dict[str, Any], name: str, value: int
+) -> None:
+    with pytest.raises(ValidationError):
+        build({**valid_settings_data, name: value})
 
 
 @pytest.mark.parametrize(

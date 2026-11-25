@@ -10,7 +10,7 @@ export const HELP_TEXT = `Usage:
   npm run ai:local -- --help
 
 Modes:
-  planning                Select a Todo issue and create or reuse an OpenSpec proposal.
+  planning                Select a Todo issue, mark it In Progress, and plan it.
   --sync-task             Verify an implemented change and synchronize Todo or In Progress to Done.
 
 Options:
@@ -20,7 +20,8 @@ Options:
 
 Planning stops after proposal validation for manual review. It never applies a change,
 closes an issue, switches branches, commits, pushes, merges, or deploys.
-An already In Progress explicit issue can resume without another status write.
+Cancellation or declined reuse makes no status write. After a planning failure,
+an already In Progress issue can resume by --issue URL without another status write.
 `;
 
 const CHANGE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;

@@ -7,7 +7,7 @@ from typing import Any, BinaryIO, cast
 from uuid import UUID, uuid4
 
 import anyio
-from botocore.exceptions import (  # type: ignore[import-untyped]
+from botocore.exceptions import (
     BotoCoreError,
     ClientError,
     ConnectTimeoutError,

@@ -103,7 +103,7 @@ async function updateAndConfirm(client, project, itemId, option, failurePrefix) 
   return confirmed;
 }
 
-export async function startProjectWork(client, project, selected, issue) {
+export async function startProjectWork(client, project, selected, issue, { requireTodo = false } = {}) {
   let live;
   try {
     live = await fetchProjectItem(client, project, selected.projectItemId);
@@ -126,6 +126,9 @@ export async function startProjectWork(client, project, selected, issue) {
     throw new GitHubError("work_start_identity_conflict", "The selected Project item no longer matches the issue. Retry after reviewing its Project link.");
   }
   if (live.status === project.inProgressOption.name && live.statusOptionId === project.inProgressOption.id) {
+    if (requireTodo) {
+      throw new GitHubError("work_start_status_conflict", "The selected Project item is no longer Todo. Review its status before retrying.");
+    }
     return Object.freeze({ kind: "already_in_progress", item: live });
   }
   if (live.status !== project.todoOption.name || live.statusOptionId !== project.todoOption.id) {

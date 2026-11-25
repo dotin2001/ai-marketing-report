@@ -27,6 +27,10 @@ test("documented workflow commands match CLI help and referenced files exist", a
   assert.match(guide, /exact `Todo` or `In Progress` option/);
   assert.match(guide, /`In Progress`/);
   assert.match(HELP_TEXT, /Move an eligible Todo issue to In Progress/);
+  assert.match(HELP_TEXT, /Select a Todo issue, mark it In Progress/);
+  assert.match(guide, /Choosing a number re-reads that item's live identity and status/);
+  assert.match(guide, /retry the same issue with its canonical `--issue` URL/);
+  assert.match(readme, /Selecting a number moves that `Todo` item to `In Progress`|Numbered and URL-targeted planning confirm In Progress/);
   assert.match(guide, /duplicate-link detection/);
   assert.match(guide, /\$openspec-apply-change <change-id>/);
   assert.match(guide, /issue remains open/i);

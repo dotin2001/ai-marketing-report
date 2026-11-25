@@ -1,6 +1,6 @@
 # Local AI Planning and Project Synchronization
 
-This repository uses a local workflow that turns one eligible GitHub Projects v2 `{{TODO_OPTION}}` issue into a reviewed OpenSpec proposal. URL-targeted planning confirms `{{IN_PROGRESS_OPTION}}` before proposal generation. After explicit implementation plus the shared basic local checks, synchronization changes only that Project item to `{{DONE_OPTION}}`.
+This repository uses a local workflow that turns one eligible GitHub Projects v2 `{{TODO_OPTION}}` issue into a reviewed OpenSpec proposal. Numbered and URL-targeted planning confirm `{{IN_PROGRESS_OPTION}}` before proposal generation. After explicit implementation plus the shared basic local checks, synchronization changes only that Project item to `{{DONE_OPTION}}`.
 
 ## Configuration and prerequisites
 
@@ -52,7 +52,7 @@ Show CLI help through the package script:
 
 The standalone `--` tells {{PACKAGE_MANAGER}} to forward the runner option. The URL must be `https://github.com/<owner>/<repository>/issues/<positive-number>` with no credentials, port, query, or fragment, and it must match the configured repository. The issue must resolve to exactly one configured-Project item in exact `{{TODO_OPTION}}` or `{{IN_PROGRESS_OPTION}}` status.
 
-Both planning paths fetch the issue and paginated comments as untrusted data, retain duplicate-link detection, invoke the literal `$openspec-propose` skill, independently validate the artifacts and traceability, and stop for review. The URL-targeted path moves one eligible `{{TODO_OPTION}}` item to `{{IN_PROGRESS_OPTION}}` before proposal generation; a retry already in progress skips the write, and a failed update stops proposal generation. A cancelled linked-change reuse leaves status unchanged. Interactive planning leaves status untouched. Neither path implements, applies, closes the issue, switches branches, commits, pushes, merges, or deploys.
+Both planning paths fetch the issue and paginated comments as untrusted data, retain duplicate-link detection, invoke the literal `$openspec-propose` skill, independently validate the artifacts and traceability, and stop for review. Choosing a number re-reads that item's live identity and status and moves only the selected `{{TODO_OPTION}}` item to `{{IN_PROGRESS_OPTION}}` before proposal generation. The URL-targeted path makes the same guarded transition; a retry already in progress skips the write. Cancellation and declined linked-change reuse leave status unchanged, and a failed update stops proposal generation. If numbered planning fails after a confirmed start, retry the same issue with its canonical `--issue` URL without another write. Neither path implements, applies, closes the issue, switches branches, commits, pushes, merges, or deploys.
 
 ## Apply explicitly
 

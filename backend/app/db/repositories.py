@@ -861,7 +861,12 @@ async def attach_dataset_and_metrics(
 
 
 async def claim_analysis_job(
-    session: AsyncSession, *, owner_id: UUID, report_id: UUID, job_id: UUID
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    job_id: UUID,
+    expected_attempt_count: int | None = None,
 ) -> bool:
     async with session.begin_nested():
         job = await session.scalar(
@@ -873,7 +878,11 @@ async def claim_analysis_job(
             )
             .with_for_update()
         )
-        if job is None or job.state != "queued":
+        if (
+            job is None
+            or job.state != "queued"
+            or (expected_attempt_count is not None and job.attempt_count != expected_attempt_count)
+        ):
             return False
         now = datetime.now(UTC)
         attempt_changed = await session.execute(
@@ -893,6 +902,52 @@ async def claim_analysis_job(
         job.updated_at = now
         await session.flush()
         return True
+
+
+async def queued_analysis_attempts(
+    session: AsyncSession, *, limit: int = 100
+) -> list[tuple[UUID, UUID, UUID, int]]:
+    if not 1 <= limit <= 500:
+        raise ValueError("invalid recovery batch size")
+    rows = await session.execute(
+        select(
+            AnalysisJob.owner_id, AnalysisJob.report_id, AnalysisJob.id, AnalysisJob.attempt_count
+        )
+        .join(
+            AnalysisJobAttempt,
+            (AnalysisJobAttempt.job_id == AnalysisJob.id)
+            & (AnalysisJobAttempt.attempt_ordinal == AnalysisJob.attempt_count),
+        )
+        .where(AnalysisJob.state == "queued", AnalysisJobAttempt.state == "queued")
+        .order_by(AnalysisJobAttempt.queued_at, AnalysisJob.id)
+        .limit(limit)
+    )
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+
+async def stale_running_analysis_attempts(
+    session: AsyncSession, *, before: datetime, limit: int = 100
+) -> list[tuple[UUID, UUID, UUID, int]]:
+    if not 1 <= limit <= 500 or before.tzinfo is None:
+        raise ValueError("invalid stale running scan")
+    rows = await session.execute(
+        select(
+            AnalysisJob.owner_id, AnalysisJob.report_id, AnalysisJob.id, AnalysisJob.attempt_count
+        )
+        .join(
+            AnalysisJobAttempt,
+            (AnalysisJobAttempt.job_id == AnalysisJob.id)
+            & (AnalysisJobAttempt.attempt_ordinal == AnalysisJob.attempt_count),
+        )
+        .where(
+            AnalysisJob.state == "running",
+            AnalysisJobAttempt.state == "running",
+            AnalysisJobAttempt.started_at < before,
+        )
+        .order_by(AnalysisJobAttempt.started_at, AnalysisJob.id)
+        .limit(limit)
+    )
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
 
 
 async def create_analysis_job(
@@ -1090,6 +1145,7 @@ async def finish_analysis_job(
             and report.current_dataset_id == job.dataset_id
             and report.current_metric_result_set_id == job.metric_result_set_id
             and active_draft.id == job.draft_id
+            and active_draft.revision == job.draft_revision
             and active_draft.objectives_revision == job.objectives_revision
         )
         if is_fresh and report is not None and active_draft is not None:
@@ -1202,6 +1258,7 @@ async def retry_analysis_job(
             or report.current_dataset_id != job.dataset_id
             or report.current_metric_result_set_id != job.metric_result_set_id
             or draft.objectives_revision != job.objectives_revision
+            or draft.revision != job.draft_revision
         ):
             raise ConcurrencyConflict("analysis retry state or input is stale")
         next_ordinal = expected_attempt_count + 1

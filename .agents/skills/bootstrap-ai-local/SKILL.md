@@ -51,7 +51,7 @@ Never place tokens, credentials, GitHub node IDs, signed URLs, or environment se
 
 ## Behavioral boundaries
 
-- Interactive planning selects an eligible configured-Project Todo issue. URL-targeted planning confirms Todo to In Progress before `$openspec-propose`; an In Progress retry skips the write. Both stop for review.
+- Interactive planning selects an eligible configured-Project Todo issue and confirms Todo to In Progress before `$openspec-propose`. URL-targeted planning uses the same guarded start; an In Progress retry skips the write. Cancellation and declined reuse leave status unchanged. Both stop for review.
 - Applying is always the separate, explicit Codex invocation `$openspec-apply-change <change-id>`.
 - `--sync-task` fails closed for missing `## Acceptance Criteria` bullet items, unchecked tasks, failed/blocked/unavailable checks, missing semantic evidence, changed fingerprints, identity conflicts, or statuses other than Todo, In Progress, or Done.
 - Only a complete passing verification can produce the guarded Todo or In Progress to Done Project mutation. The runner never closes the issue.

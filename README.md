@@ -1,6 +1,6 @@
 # ai-marketing-report
 
-This repository includes a guarded local AI workflow that selects an eligible GitHub Project `Todo` issue, creates or reuses a validated OpenSpec proposal, and later runs the shared basic local checks before updating only that Project item to `Done`.
+This repository includes a guarded local AI workflow that selects an eligible GitHub Project `Todo` issue, confirms its `In Progress` status, creates or reuses a validated OpenSpec proposal, and later runs the shared basic local checks before updating only that Project item to `Done`.
 
 ```sh
 npm run ai:local
@@ -9,7 +9,7 @@ npm run ai:local -- --sync-task
 npm run ai:local -- --sync-task --change <change-id>
 ```
 
-Planning can be interactive or target one canonical GitHub issue URL. URL-targeted planning accepts an exact `Todo` or `In Progress` item in the configured Project; the standalone `--` forwards `--issue` through npm. Both planning forms can reuse an existing valid issue/change link instead of duplicating it and stop before implementation. Review and apply the proposal manually in Codex with `$openspec-apply-change <change-id>`.
+Planning can be interactive or target one canonical GitHub issue URL. Selecting a number moves that `Todo` item to `In Progress` before proposal work; cancellation or declined reuse leaves status unchanged. URL-targeted planning accepts an exact `Todo` or `In Progress` item in the configured Project; the standalone `--` forwards `--issue` through npm. If planning fails after the status change, retry with the selected issue's URL without another status write. Both planning forms can reuse an existing valid issue/change link instead of duplicating it and stop before implementation. Review and apply the proposal manually in Codex with `$openspec-apply-change <change-id>`.
 
 For synchronization, a normal non-empty issue description is sufficient and becomes one issue-level criterion for optional semantic review. A Markdown Acceptance Criteria section is optional but recommended when separate outcomes need separate evidence. Empty issue bodies and explicitly present criteria sections without bullet items fail closed. A failed required basic check leaves `Todo` or `In Progress` unchanged; a failed GitHub synchronization retains passing evidence for a fingerprint-checked retry.
 

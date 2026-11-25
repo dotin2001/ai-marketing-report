@@ -1,0 +1,32 @@
+## Context
+
+See `proposal.md` and the new capability spec. `infra/compose.yaml` already provides password-protected Redis. `backend/app/core/config.py` validates `REDIS_URL`; `backend/pyproject.toml` has `redis` but no Celery dependency. `backend/app/jobs/` is empty. PostgreSQL models and repository functions already cover analysis jobs, attempts, uniqueness, claim, finish, failure, and retry, with integration coverage in `backend/tests/integration/db/test_analysis_jobs.py`. No analysis-job HTTP routes or production AI executor exist. `project.md` defines the existing `/api/v1/reports/{report_id}/analysis-jobs` contract and safe failure codes.
+
+## Goals / Non-Goals
+
+**Goals:** Make the existing persisted analysis operation executable and observable through a thin API, an independently running worker, and replay-safe delivery. Keep one source of truth for the logical job and each attempt.
+
+**Non-Goals:** Produce narrative without a real validated executor, integrate OpenAI, run PDF exports, add frontend status polling, or introduce a general-purpose job abstraction before PDF is a second real consumer.
+
+## Decisions
+
+1. **Use one analysis-specific Celery task with opaque identifiers.** Pin Celery in `backend/pyproject.toml` and lockfile; configure broker from the existing validated Redis URL, bounded publish/connect timeouts, and late acknowledgment. The task payload carries only owner/report/job UUIDs and the expected attempt ordinal. Resolve all business inputs from PostgreSQL inside the worker. A generic task carrying source content or serialized ORM objects would widen the leak and stale-input surface.
+2. **Commit before publish, then reconcile queued rows.** The domain service validates ownership and current semantic input, resolves the scoped idempotency record, and creates the job/attempt in one transaction. After commit, publish the task. Publishing failure is logged with safe IDs, but the accepted job remains queued. A bounded recovery command scans persisted queued attempts and republishes their IDs; it is safe to run repeatedly or on worker startup. Do not inspect Redis for status. An outbox table is unnecessary because republishing already committed queued rows plus compare-and-set claim closes this gap for this stage. Broker failure before a durable acceptance can return sanitized `503 dependency_unavailable` only when the database transaction was not committed.
+3. **Bind delivery to an attempt ordinal.** Extend the repository claim operation to require the message's ordinal and compare it with `job.attempt_count` under row lock before changing the queued attempt to running. This prevents an old message from claiming a newly queued retry. Finish and failure retain their existing expected-attempt checks. Duplicate messages and concurrent workers become no-ops after a successful claim. Commit the running transition before execution and acknowledge only after the terminal outcome is durable. The worker never treats Celery's result backend as authoritative.
+4. **Keep lifecycle rules in an analysis-job domain service.** Routes authenticate, parse Pydantic requests, call the service, and serialize owner-scoped reads. The service derives the canonical semantic identity from current confirmed dataset, metric set, objectives, and revision; it does not trust a client-provided hash alone. It uses existing idempotency and job uniqueness constraints. Retry checks failed/retryable state, semantic freshness, key fingerprint, and observed attempt ordinal transactionally. Replays return the existing logical ID without scheduling a new attempt, though queued reconciliation can safely republish its pending delivery.
+5. **Make outcomes explicit until AI integration.** A worker runner interface accepts a validated result bundle and invokes the existing `finish_analysis_job` transaction. Deterministic test runners exercise success and failure. The production runner for this change reports `provider_unavailable` as a sanitized retryable failure while no AI executor is configured; it never writes a placeholder success. The later AI change replaces that runner with the structured-output adapter. Map expected failures to existing safe analysis codes; unexpected exceptions use `provider_unavailable` with a fixed message and private correlation ID only. Do not log exception text or customer-bearing inputs.
+6. **Serialize from persisted state.** Add Pydantic schemas for the existing analysis-job API contract, including `202` creation/retry, list/detail pagination, ordered attempt timestamps, safe failure summaries, and result only when succeeded. Query report ownership before job-specific validation and return the established owner-safe `404`. Reuse the current API error and cursor conventions. The API never reports queue status from Celery.
+
+## Risks / Trade-offs
+
+- [A worker can die after recording `running` and before terminal persistence] → Keep that attempt visible as running rather than silently executing it twice; document an operator recovery procedure and add a bounded stale-running detector in this stage that marks such attempts failed with an existing safe retryable failure code only after a configured timeout. Verify a late worker cannot overwrite that terminal state. The timeout must exceed normal task time limits.
+- [A delayed message for attempt N arrives after retry N+1] → Include and compare the ordinal on claim; test this race against PostgreSQL.
+- [Publish failure leaves a queued job] → Reconcile queued rows from PostgreSQL with bounded batches; test repeated reconciliation and broker recovery.
+- [No AI executor exists yet] → Use an explicit retryable failure rather than a fabricated result; keep the worker runner boundary injectable for the next focused change.
+- [Framework or database error leaks in API or logs] → Map to allowlisted error codes/messages and test forbidden strings in responses and captured logs.
+
+## Migration Plan
+
+1. Add and lock Celery, validated worker settings, example environment values, and a documented local worker/reconciler command. Reuse Redis; no infrastructure service or schema migration is planned unless implementation identifies a concrete gap.
+2. Deploy the API and worker together. Start the recovery command so already committed queued jobs are dispatched after a publish interruption.
+3. Roll back by stopping worker and new API routes while leaving durable jobs/attempts intact. Do not delete or reset state; resume delivery from queued rows when redeployed.

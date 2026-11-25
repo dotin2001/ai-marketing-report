@@ -64,6 +64,21 @@ class Settings(BaseSettings):
 
     redis_password: SecretStr = Field(validation_alias="REDIS_PASSWORD")
     redis_url: SecretStr = Field(validation_alias="REDIS_URL")
+    analysis_publish_timeout_seconds: float = Field(
+        default=3, gt=0, le=30, validation_alias="ANALYSIS_PUBLISH_TIMEOUT_SECONDS"
+    )
+    analysis_task_time_limit_seconds: int = Field(
+        default=300, ge=10, le=3600, validation_alias="ANALYSIS_TASK_TIME_LIMIT_SECONDS"
+    )
+    analysis_stale_running_seconds: int = Field(
+        default=600, ge=11, le=7200, validation_alias="ANALYSIS_STALE_RUNNING_SECONDS"
+    )
+
+    @model_validator(mode="after")
+    def validate_analysis_timeouts(self) -> Self:
+        if self.analysis_stale_running_seconds <= self.analysis_task_time_limit_seconds:
+            raise ValueError("ANALYSIS_STALE_RUNNING_SECONDS must exceed task time limit")
+        return self
 
     s3_endpoint_url: str = Field(validation_alias="S3_ENDPOINT_URL")
     s3_region: str = Field(min_length=1, validation_alias="S3_REGION")

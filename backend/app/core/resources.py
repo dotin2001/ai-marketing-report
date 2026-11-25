@@ -6,8 +6,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import boto3  # type: ignore[import-untyped]
-from botocore.config import Config  # type: ignore[import-untyped]
+import boto3
+from botocore.config import Config
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 

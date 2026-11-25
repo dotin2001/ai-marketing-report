@@ -116,6 +116,19 @@ test("already In Progress start is read-only", async () => {
   assert.equal(writes, 0);
 });
 
+test("numbered Todo selection rejects a concurrent In Progress change", async () => {
+  let writes = 0;
+  const client = { graphql: async (query) => {
+    if (query === statusSyncQueries.updateStatus) writes += 1;
+    return item("In Progress", "PROGRESS");
+  } };
+  await assert.rejects(
+    startProjectWork(client, workProject, selected, issue, { requireTodo: true }),
+    (error) => error.code === "work_start_status_conflict",
+  );
+  assert.equal(writes, 0);
+});
+
 test("changed status or issue linkage stops before start mutation", async () => {
   for (const response of [item("Done", "DONE"), { node: { ...item("Todo", "TODO").node, content: { ...item().node.content, id: "OTHER" } } }]) {
     let writes = 0;

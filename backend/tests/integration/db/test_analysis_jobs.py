@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -31,9 +31,11 @@ from app.db.repositories import (
     create_analysis_job,
     fail_analysis_job,
     finish_analysis_job,
+    queued_analysis_attempts,
     resolve_idempotency,
     retry_analysis_job,
     save_draft_objectives,
+    stale_running_analysis_attempts,
 )
 from app.db.testing import validate_test_database
 from tests.integration.db.conftest import seed_report
@@ -311,6 +313,69 @@ async def test_analysis_failure_retries_once_only_for_unchanged_inputs(
         (1, "failed"),
         (2, "queued"),
     ]
+
+    assert not await claim_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+    )
+    assert (report.owner_id, report.id, job.id, 2) in await queued_analysis_attempts(db_session)
+    assert await claim_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_running_attempt_cannot_accept_late_completion(
+    db_session: AsyncSession,
+) -> None:
+    report, _dataset, metric_set, _draft, job = await seed_analysis_job(
+        db_session, subject="analysis-interrupted"
+    )
+    assert await claim_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+    )
+    await db_session.execute(
+        update(AnalysisJobAttempt)
+        .where(
+            AnalysisJobAttempt.job_id == job.id,
+        )
+        .values(started_at=datetime.now(UTC) - timedelta(minutes=20))
+    )
+    assert (report.owner_id, report.id, job.id, 1) in await stale_running_analysis_attempts(
+        db_session, before=datetime.now(UTC) - timedelta(minutes=10)
+    )
+    await fail_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+        failure_code="provider_timeout",
+        failure_message="Analysis timed out.",
+        retryable=True,
+    )
+    result, items = analysis_result_for(report, metric_set, job), [analysis_item_for(report)]
+    with pytest.raises(ConcurrencyConflict):
+        await finish_analysis_job(
+            db_session,
+            owner_id=report.owner_id,
+            report_id=report.id,
+            job_id=job.id,
+            expected_attempt_count=1,
+            result=result,
+            items=items,
+        )
 
 
 @pytest.mark.asyncio

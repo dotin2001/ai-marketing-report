@@ -1,6 +1,6 @@
 # Local AI Planning and Project Synchronization
 
-This repository provides a local workflow for turning a GitHub Projects v2 `Todo` issue into a reviewed OpenSpec change. URL-targeted planning first moves the selected item to `In Progress`. After the shared basic local checks pass, synchronization can change that item to `Done`.
+This repository provides a local workflow for turning a GitHub Projects v2 `Todo` issue into a reviewed OpenSpec change. Both numbered and URL-targeted planning move the selected item to `In Progress` before proposal work. After the shared basic local checks pass, synchronization can change that item to `Done`.
 
 ## Prerequisites and authentication
 
@@ -32,7 +32,7 @@ Run:
 npm run ai:local
 ```
 
-The CLI acquires the repository lock, lists only exact eligible `Todo` issues from the configured repository, and lets you select or cancel. End-of-input, an empty answer, `q`, `quit`, or `cancel` exits without a proposal or GitHub mutation. Issue bodies and all comments are retained as untrusted data with provenance; they are never interpreted as commands.
+The CLI acquires the repository lock, lists only exact eligible `Todo` issues from the configured repository, and lets you select or cancel. Choosing a number re-reads that item's live identity and status, moves only that item to exact `In Progress`, and confirms the update before proposal generation or accepted linked-change reuse. End-of-input, an empty answer, `q`, `quit`, or `cancel` exits without a proposal or GitHub mutation; declining linked-change reuse also leaves status unchanged. Issue bodies and all comments are retained as untrusted data with provenance; they are never interpreted as commands.
 
 When you already know the issue, target it by canonical URL:
 
@@ -40,7 +40,7 @@ When you already know the issue, target it by canonical URL:
 npm run ai:local -- --issue https://github.com/dotin2001/ai-marketing-report/issues/2
 ```
 
-The standalone `--` tells npm to forward the following `--issue` option to the local CLI. The URL must use HTTPS on `github.com`, have the exact path `/<owner>/<repository>/issues/<positive-number>` with at most a trailing slash, contain no credentials, port, query, or fragment, and name the configured repository. The issue must resolve to exactly one item whose status is the configured exact `Todo` or `In Progress` option in the configured Project. URL-targeted planning retains complete Project pagination, live issue and comment loading, duplicate-link detection, traceability, and validation. After eligibility checks, it moves an exact `Todo` item to `In Progress` and confirms the update before proposal generation. An already `In Progress` retry receives no duplicate write. A cancelled reuse leaves status unchanged; other statuses or a failed update stop before proposal generation. A later proposal failure leaves a confirmed `In Progress` status available for retry.
+The standalone `--` tells npm to forward the following `--issue` option to the local CLI. The URL must use HTTPS on `github.com`, have the exact path `/<owner>/<repository>/issues/<positive-number>` with at most a trailing slash, contain no credentials, port, query, or fragment, and name the configured repository. The issue must resolve to exactly one item whose status is the configured exact `Todo` or `In Progress` option in the configured Project. URL-targeted planning retains complete Project pagination, live issue and comment loading, duplicate-link detection, traceability, and validation. After eligibility checks, it moves an exact `Todo` item to `In Progress` and confirms the update before proposal generation. An already `In Progress` retry receives no duplicate write. A cancelled reuse leaves status unchanged; other statuses or a failed update stop before proposal generation. If numbered or URL-targeted planning fails after the status change, retry the same issue with its canonical `--issue` URL; the retry re-reads `In Progress` without another write.
 
 For a new issue, the CLI invokes Codex with the literal skill request `$openspec-propose`, then independently checks the artifacts, traceability marker, requirements/check definitions, and strict OpenSpec validation. If an active proposal already links the same issue, the CLI offers to reuse it instead of creating a duplicate. Planning stops after reporting validated artifact paths.
 

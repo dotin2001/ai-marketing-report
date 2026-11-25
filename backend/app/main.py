@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from app.api.analysis_jobs import router as analysis_job_router
 from app.api.datasets import router as dataset_router
 from app.api.errors import APIError, api_error_handler, request_validation_handler
 from app.api.health import router as health_router
@@ -18,6 +19,7 @@ from app.core.config import Settings
 from app.core.health import ResourceProbeProvider
 from app.core.resources import ResourceClients, create_resource_clients
 from app.db.session import create_session_factory
+from app.domain.analysis_jobs import AnalysisJobServices
 from app.domain.assets import AssetServices
 from app.domain.dataset_reads import DatasetReadServices
 from app.domain.import_confirmation import ImportConfirmationServices
@@ -74,6 +76,10 @@ def create_app(
             app.state.dataset_read_services = DatasetReadServices(
                 create_session_factory(clients.postgresql)
             )
+            app.state.analysis_job_services = AnalysisJobServices(
+                create_session_factory(clients.postgresql),
+                resolved_settings.report_cursor_signing_key.get_secret_value(),
+            )
         app.state.probe_provider = ResourceProbeProvider(
             clients=clients,
             bucket=resolved_settings.s3_bucket,
@@ -96,4 +102,5 @@ def create_app(
     application.include_router(report_router)
     application.include_router(source_router)
     application.include_router(dataset_router)
+    application.include_router(analysis_job_router)
     return application
