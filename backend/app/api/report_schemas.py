@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, date, datetime
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -94,6 +94,90 @@ class ObjectivesPatchRequest(ObjectiveList):
     expected_revision: StrictInt = Field(ge=1)
 
 
+def _draft_text(value: str) -> str:
+    trimmed = value.strip()
+    if not 1 <= len(trimmed) <= 2000:
+        raise ValueError("Draft text must contain 1 to 2000 characters.")
+    return trimmed
+
+
+DraftText = Annotated[StrictStr, AfterValidator(_draft_text)]
+NarrativeSection = Literal["summary", "findings", "anomalies", "recommendations", "data_gaps"]
+NarrativeLabel = Literal["observation", "hypothesis", "user_claim"]
+
+
+class NarrativeEdit(StrictModel):
+    id: UUID | None = None
+    section: NarrativeSection
+    content: DraftText
+    classification: NarrativeLabel | None = None
+
+
+class LimitationEdit(StrictModel):
+    id: UUID | None = None
+    content: DraftText
+
+
+class ClaimEdit(StrictModel):
+    id: UUID | None = None
+    content: DraftText
+    classification: Literal["user_claim"] = "user_claim"
+    source_id: UUID | None = None
+
+
+class ChartEdit(StrictModel):
+    id: UUID | None = None
+    chart_type: Literal["bar", "line", "table"]
+    title: Annotated[StrictStr, Field(min_length=1, max_length=160)]
+    scope: Annotated[StrictStr, Field(min_length=1, max_length=64)]
+    x_label: Annotated[StrictStr, Field(max_length=80)] | None = None
+    y_label: Annotated[StrictStr, Field(max_length=80)] | None = None
+    metric_result_ids: list[UUID] = Field(min_length=1, max_length=8)
+
+    @field_validator("title", "scope")
+    @classmethod
+    def trim_required(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("This field must not be blank.")
+        return value.strip()
+
+    @field_validator("x_label", "y_label")
+    @classmethod
+    def trim_optional(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("metric_result_ids")
+    @classmethod
+    def unique_metrics(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("Metric references must be unique.")
+        return value
+
+
+class UpdateDraftRequest(StrictModel):
+    expected_revision: StrictInt = Field(ge=1)
+    objectives: list[Annotated[StrictStr, AfterValidator(_objective)]] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
+    narrative: list[NarrativeEdit] | None = Field(default=None, max_length=100)
+    limitations: list[LimitationEdit] | None = Field(default=None, max_length=100)
+    claims: list[ClaimEdit] | None = Field(default=None, max_length=100)
+    charts: list[ChartEdit] | None = Field(default=None, max_length=16)
+
+    @model_validator(mode="after")
+    def require_collection(self) -> Self:
+        fields = self.model_fields_set & {
+            "objectives",
+            "narrative",
+            "limitations",
+            "claims",
+            "charts",
+        }
+        if not fields or any(getattr(self, field) is None for field in fields):
+            raise ValueError("Provide at least one draft collection without null values.")
+        return self
+
+
 class ListReportsQuery(StrictModel):
     limit: StrictInt = Field(default=25, ge=1, le=100)
     cursor: str | None = None
@@ -137,6 +221,17 @@ class Limitation(StrictModel):
     content: str
 
 
+class Chart(StrictModel):
+    id: UUID
+    ordinal: int
+    chart_type: Literal["bar", "line", "table"]
+    title: str
+    scope: str
+    x_label: str | None
+    y_label: str | None
+    metric_result_ids: list[UUID]
+
+
 class DraftDetail(PublicModel):
     id: UUID
     report_id: UUID
@@ -145,6 +240,7 @@ class DraftDetail(PublicModel):
     narrative: list[NarrativeItem] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
     limitations: list[Limitation] = Field(default_factory=list)
+    charts: list[Chart] = Field(default_factory=list)
     current_metric_result_set_id: UUID | None
     current_analysis_result_id: UUID | None
     created_at: datetime

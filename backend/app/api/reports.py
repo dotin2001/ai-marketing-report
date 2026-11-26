@@ -18,12 +18,12 @@ from app.api.report_schemas import (
     DraftEnvelope,
     ErrorEnvelope,
     MetadataPatchRequest,
-    ObjectivesPatchRequest,
     ReportEnvelope,
     ReportListEnvelope,
+    UpdateDraftRequest,
 )
 from app.db.repositories import ConcurrencyConflict, IdempotencyConflict
-from app.domain.reports import InvalidCursor, ReportNotFound, ReportServices
+from app.domain.reports import DraftValidationError, InvalidCursor, ReportNotFound, ReportServices
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 errors: dict[int | str, dict[str, Any]] = {
@@ -122,17 +122,28 @@ async def patch_report(
 
 
 @router.patch("/{report_id}/draft", response_model=DraftEnvelope, responses=errors)
-async def patch_draft_objectives(
+async def patch_draft(
     report_id: UUID,
-    command: ObjectivesPatchRequest,
+    command: UpdateDraftRequest,
     principal: Annotated[AuthenticatedPrincipal, Depends(get_authenticated_principal)],
     services: Annotated[ReportServices, Depends(get_report_services)],
 ) -> DraftEnvelope:
     try:
-        return DraftEnvelope(
-            data=await services.update_objectives(principal.id, report_id, command)
-        )
+        return DraftEnvelope(data=await services.update_draft(principal.id, report_id, command))
     except ReportNotFound:
         raise _not_found() from None
     except ConcurrencyConflict:
         raise _revision_conflict() from None
+    except DraftValidationError as error:
+        raise APIError(
+            422,
+            "validation_failed",
+            "The request contains invalid fields.",
+            details=[
+                {
+                    "code": "invalid_reference",
+                    "message": "This reference is invalid.",
+                    "path": error.path,
+                }
+            ],
+        ) from None

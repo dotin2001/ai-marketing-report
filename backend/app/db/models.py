@@ -210,6 +210,9 @@ class DraftClaim(UUIDPrimaryKeyMixin, Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     classification: Mapped[str] = mapped_column(String(16), nullable=False, default="user_claim")
     source_id: Mapped[UUID | None] = mapped_column(UUID_TYPE)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -218,7 +221,13 @@ class DraftClaim(UUIDPrimaryKeyMixin, Base):
             name="fk_draft_claims_draft_aggregate",
             ondelete="RESTRICT",
         ),
-        UniqueConstraint("draft_id", "ordinal", name="uq_draft_claims_order"),
+        Index(
+            "uq_draft_claims_active_order",
+            "draft_id",
+            "ordinal",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
         UniqueConstraint("id", "report_id", "owner_id", name="uq_draft_claims_aggregate"),
         CheckConstraint("classification = 'user_claim'", name="classification_user_claim"),
         CheckConstraint("ordinal > 0", name="ordinal_positive"),

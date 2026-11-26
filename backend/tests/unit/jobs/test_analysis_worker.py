@@ -17,6 +17,7 @@ from app.ai.output import NarrativeItem, NumericAssertion, StructuredOutput
 from app.ai.prompt import PROMPT_VERSION
 from app.ai.wire import WireOutput
 from app.api.analysis_job_schemas import RetryAnalysisJobRequest
+from app.api.report_schemas import UpdateDraftRequest
 from app.core.config import Settings
 from app.db.models import (
     AnalysisItemMetricReference,
@@ -29,6 +30,7 @@ from app.db.models import (
 )
 from app.db.repositories import ConcurrencyConflict
 from app.domain.analysis_jobs import AnalysisJobServices, current_analysis_input
+from app.domain.reports import ReportServices
 from app.jobs.analysis_worker import (
     AnalysisExecutionFailure,
     RunnerOutput,
@@ -534,6 +536,61 @@ async def test_late_openai_response_cannot_attach_to_changed_draft(
                 )
             )
         ).all() == []
+
+
+@pytest.mark.asyncio
+async def test_saved_presentation_edit_survives_late_analysis(
+    concurrent_engine: AsyncEngine, settings: Settings
+) -> None:
+    sessions, owner, report, job_id, _semantic, _numeric = await seeded(
+        concurrent_engine, "presentation-edit-during-analysis"
+    )
+    reports = ReportServices(sessions, "s" * 32)
+
+    class EditingResponses:
+        async def parse(self, **_kwargs: Any) -> Any:
+            saved = await reports.update_draft(
+                owner,
+                report,
+                UpdateDraftRequest.model_validate(
+                    {
+                        "expected_revision": 1,
+                        "narrative": [
+                            {
+                                "section": "summary",
+                                "content": "Owner's edit",
+                                "classification": "user_claim",
+                            }
+                        ],
+                        "limitations": [{"content": "Owner's limitation"}],
+                        "claims": [{"content": "Owner's claim"}],
+                    }
+                ),
+            )
+            assert saved.revision == 2
+            return response()
+
+    assert await execute_analysis(
+        sessions,
+        owner,
+        report,
+        job_id,
+        1,
+        OpenAIAnalysisAdapter(settings, SimpleNamespace(responses=EditingResponses())),
+    )
+    detail = (await reports.detail(owner, report)).active_draft
+    assert detail.revision == 2
+    assert detail.narrative[0].content == "Owner's edit"
+    assert detail.limitations[0].content == "Owner's limitation"
+    assert detail.claims[0].content == "Owner's claim"
+    assert detail.current_analysis_result_id is None
+    async with sessions() as session:
+        job = await session.get(AnalysisJob, job_id)
+        assert job is not None and job.failure_code == "stale_result"
+        assert (
+            await session.scalar(select(AnalysisResult.id).where(AnalysisResult.job_id == job_id))
+            is None
+        )
 
 
 @pytest.mark.asyncio

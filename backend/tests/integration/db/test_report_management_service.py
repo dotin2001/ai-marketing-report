@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -10,9 +11,16 @@ import pytest
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api.report_schemas import CreateReportRequest, MetadataPatchRequest, ObjectivesPatchRequest
+from app.api.report_schemas import (
+    CreateReportRequest,
+    MetadataPatchRequest,
+    ObjectivesPatchRequest,
+    UpdateDraftRequest,
+)
 from app.db.models import (
+    AnalysisItemClaimReference,
     CanonicalDataset,
+    DraftClaim,
     DraftNarrativeItem,
     DraftObjective,
     IdempotencyRecord,
@@ -26,12 +34,19 @@ from app.db.repositories import (
     ConcurrencyConflict,
     IdempotencyConflict,
     attach_source,
+    claim_analysis_job,
     confirm_source_review,
     create_analysis_job,
+    finish_analysis_job,
 )
 from app.db.testing import validate_test_database
-from app.domain.reports import InvalidCursor, ReportNotFound, ReportServices
+from app.domain.reports import DraftValidationError, InvalidCursor, ReportNotFound, ReportServices
 from app.domain.versions import save_current_report_version
+from tests.integration.db.test_analysis_jobs import (
+    analysis_item_for,
+    analysis_result_for,
+    seed_analysis_job,
+)
 from tests.integration.db.test_datasets_and_metrics import seed_dataset_metric_aggregate
 
 pytestmark = pytest.mark.postgres
@@ -45,6 +60,366 @@ def request(name: str = "Report") -> CreateReportRequest:
             "objectives": ["Explain performance"],
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_editable_draft_save_reopens_and_replaces_only_supplied_sections(
+    db_session: AsyncSession,
+) -> None:
+    report, dataset, _row, _metric_set, metric = await seed_dataset_metric_aggregate(
+        db_session, subject=str(uuid4())
+    )
+    await db_session.flush()
+    assert db_session.bind is not None
+    service = ReportServices(
+        async_sessionmaker(
+            db_session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        ),
+        "x" * 32,
+    )
+    saved = await service.update_draft(
+        report.owner_id,
+        report.id,
+        UpdateDraftRequest.model_validate(
+            {
+                "expected_revision": 1,
+                "narrative": [
+                    {
+                        "section": "summary",
+                        "content": "  A summary  ",
+                        "classification": "observation",
+                    }
+                ],
+                "limitations": [{"content": "  Limited sample  "}],
+                "claims": [{"content": "  Customer claim  ", "source_id": str(dataset.source_id)}],
+                "charts": [
+                    {
+                        "chart_type": "bar",
+                        "title": " CTR ",
+                        "scope": metric.scope,
+                        "metric_result_ids": [str(metric.id)],
+                    }
+                ],
+            }
+        ),
+    )
+    assert saved.revision == 2 and saved.objectives == ["Explain acquisition performance"]
+    assert [item.content for item in saved.narrative] == ["A summary"]
+    assert saved.claims[0].source_id == dataset.source_id
+    assert saved.charts[0].metric_result_ids == [metric.id]
+    reopened = (await service.detail(report.owner_id, report.id)).active_draft
+    assert reopened.model_dump(mode="json") == saved.model_dump(mode="json")
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(ReportVersion)
+            .where(ReportVersion.report_id == report.id)
+        )
+        == 0
+    )
+    cleared = await service.update_draft(
+        report.owner_id,
+        report.id,
+        UpdateDraftRequest(expected_revision=2, limitations=[]),
+    )
+    assert cleared.revision == 3 and cleared.limitations == []
+    assert cleared.narrative == saved.narrative and cleared.claims == saved.claims
+    assert cleared.charts == saved.charts
+    with pytest.raises(ConcurrencyConflict):
+        await service.update_draft(
+            report.owner_id,
+            report.id,
+            UpdateDraftRequest(expected_revision=2, claims=[]),
+        )
+    with pytest.raises(DraftValidationError):
+        await service.update_draft(
+            report.owner_id,
+            report.id,
+            UpdateDraftRequest.model_validate(
+                {
+                    "expected_revision": 3,
+                    "narrative": [{"section": "summary", "content": "Do not save"}],
+                    "charts": [
+                        {
+                            "chart_type": "bar",
+                            "title": "Wrong",
+                            "scope": "report",
+                            "metric_result_ids": [str(uuid4())],
+                        }
+                    ],
+                }
+            ),
+        )
+    after = (await service.detail(report.owner_id, report.id)).active_draft
+    assert after.revision == 3 and after.narrative == saved.narrative
+    assert after.charts == saved.charts
+    retained = await service.update_draft(
+        report.owner_id,
+        report.id,
+        UpdateDraftRequest.model_validate(
+            {
+                "expected_revision": 3,
+                "claims": [
+                    {
+                        "id": str(saved.claims[0].id),
+                        "content": saved.claims[0].content,
+                        "source_id": str(dataset.source_id),
+                    }
+                ],
+                "charts": [
+                    {
+                        "id": str(saved.charts[0].id),
+                        "chart_type": "bar",
+                        "title": "CTR",
+                        "scope": metric.scope,
+                        "metric_result_ids": [str(metric.id)],
+                    }
+                ],
+            }
+        ),
+    )
+    assert retained.claims[0].id == saved.claims[0].id
+    assert retained.charts[0].id == saved.charts[0].id
+    objective_only = await service.update_draft(
+        report.owner_id,
+        report.id,
+        UpdateDraftRequest(expected_revision=4, objectives=["New objective"]),
+    )
+    assert objective_only.revision == 5 and objective_only.objectives == ["New objective"]
+    assert objective_only.charts == saved.charts
+
+
+@pytest.mark.asyncio
+async def test_draft_references_are_current_scoped_and_atomic(db_session: AsyncSession) -> None:
+    report, _dataset, _row, metric_set, metric = await seed_dataset_metric_aggregate(
+        db_session, subject=str(uuid4())
+    )
+    (
+        other,
+        other_dataset,
+        _other_row,
+        _other_set,
+        other_metric,
+    ) = await seed_dataset_metric_aggregate(db_session, subject=str(uuid4()))
+    await db_session.flush()
+    assert db_session.bind is not None
+    service = ReportServices(
+        async_sessionmaker(
+            db_session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        ),
+        "x" * 32,
+    )
+    for payload in (
+        {"claims": [{"content": "Claim", "source_id": str(other_dataset.source_id)}]},
+        {
+            "charts": [
+                {
+                    "chart_type": "bar",
+                    "title": "Foreign",
+                    "scope": "report",
+                    "metric_result_ids": [str(other_metric.id)],
+                }
+            ]
+        },
+        {
+            "charts": [
+                {
+                    "chart_type": "bar",
+                    "title": "Missing",
+                    "scope": "report",
+                    "metric_result_ids": [str(uuid4())],
+                }
+            ]
+        },
+        {
+            "charts": [
+                {
+                    "chart_type": "bar",
+                    "title": "Wrong scope",
+                    "scope": "currency:USD",
+                    "metric_result_ids": [str(metric.id)],
+                }
+            ]
+        },
+    ):
+        with pytest.raises(DraftValidationError):
+            await service.update_draft(
+                report.owner_id,
+                report.id,
+                UpdateDraftRequest.model_validate({"expected_revision": 1, **payload}),
+            )
+        assert (await service.detail(report.owner_id, report.id)).active_draft.revision == 1
+    await db_session.execute(
+        update(Report).where(Report.id == report.id).values(current_metric_result_set_id=None)
+    )
+    with pytest.raises(DraftValidationError):
+        await service.update_draft(
+            report.owner_id,
+            report.id,
+            UpdateDraftRequest.model_validate(
+                {
+                    "expected_revision": 1,
+                    "charts": [
+                        {
+                            "chart_type": "bar",
+                            "title": "Historical",
+                            "scope": "report",
+                            "metric_result_ids": [str(metric.id)],
+                        }
+                    ],
+                }
+            ),
+        )
+    await db_session.execute(
+        update(Report)
+        .where(Report.id == report.id)
+        .values(current_metric_result_set_id=metric_set.id)
+    )
+    with pytest.raises(ReportNotFound):
+        await service.update_draft(
+            other.owner_id, report.id, UpdateDraftRequest(expected_revision=1, claims=[])
+        )
+    assert (await service.detail(report.owner_id, report.id)).active_draft.revision == 1
+    assert (await service.detail(report.owner_id, report.id)).active_draft.charts == []
+
+
+@pytest.mark.asyncio
+async def test_presentation_edit_preserves_provenance_and_version(db_session: AsyncSession) -> None:
+    report, dataset, metric_set, draft, job = await seed_analysis_job(
+        db_session, subject=str(uuid4())
+    )
+    assert await claim_analysis_job(
+        db_session, owner_id=report.owner_id, report_id=report.id, job_id=job.id
+    )
+    result = analysis_result_for(report, metric_set, job)
+    assert await finish_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+        result=result,
+        items=[analysis_item_for(report)],
+    )
+    version = await save_current_report_version(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        draft_id=draft.id,
+        expected_revision=1,
+        template_version="report-v1",
+        idempotency_key="pre-edit-version",
+    )
+    original_snapshot = deepcopy(version.snapshot)
+    original_identity = version.snapshot_identity
+    await db_session.flush()
+    assert db_session.bind is not None
+    service = ReportServices(
+        async_sessionmaker(
+            db_session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        ),
+        "x" * 32,
+    )
+    edited = await service.update_draft(
+        report.owner_id,
+        report.id,
+        UpdateDraftRequest.model_validate(
+            {
+                "expected_revision": 1,
+                "narrative": [{"section": "summary", "content": "Edited presentation"}],
+                "limitations": [{"content": "New limitation"}],
+            }
+        ),
+    )
+    assert edited.revision == 2 and edited.current_analysis_result_id == result.id
+    await db_session.refresh(report)
+    await db_session.refresh(version)
+    assert report.current_source_id == dataset.source_id
+    assert report.current_metric_result_set_id == metric_set.id
+    assert report.current_analysis_result_id == result.id
+    assert version.snapshot == original_snapshot and version.snapshot_identity == original_identity
+    assert version.source_draft_revision == 1
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(ReportVersion)
+            .where(ReportVersion.report_id == report.id)
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_clearing_referenced_claim_keeps_analysis_provenance(
+    db_session: AsyncSession,
+) -> None:
+    report, _dataset, metric_set, draft, job = await seed_analysis_job(
+        db_session, subject=str(uuid4())
+    )
+    claim = DraftClaim(
+        owner_id=report.owner_id,
+        report_id=report.id,
+        draft_id=draft.id,
+        ordinal=1,
+        content="Earlier claim",
+        classification="user_claim",
+    )
+    db_session.add(claim)
+    await db_session.flush()
+    assert await claim_analysis_job(
+        db_session, owner_id=report.owner_id, report_id=report.id, job_id=job.id
+    )
+    item = analysis_item_for(report)
+    item.id = uuid4()
+    result = analysis_result_for(report, metric_set, job)
+    assert await finish_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+        result=result,
+        items=[item],
+        claim_references=[
+            AnalysisItemClaimReference(
+                item_id=item.id,
+                claim_id=claim.id,
+                owner_id=report.owner_id,
+                report_id=report.id,
+            )
+        ],
+    )
+    await db_session.flush()
+    assert db_session.bind is not None
+    service = ReportServices(
+        async_sessionmaker(
+            db_session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        ),
+        "x" * 32,
+    )
+    cleared = await service.update_draft(
+        report.owner_id, report.id, UpdateDraftRequest(expected_revision=1, claims=[])
+    )
+    assert cleared.claims == [] and cleared.current_analysis_result_id == result.id
+    await db_session.refresh(claim)
+    assert claim.is_active is False
+    assert (
+        await db_session.scalar(
+            select(AnalysisItemClaimReference.claim_id).where(
+                AnalysisItemClaimReference.claim_id == claim.id
+            )
+        )
+        == claim.id
+    )
+    replacement = await service.update_draft(
+        report.owner_id,
+        report.id,
+        UpdateDraftRequest.model_validate(
+            {"expected_revision": 2, "claims": [{"content": "Replacement claim"}]}
+        ),
+    )
+    assert [entry.content for entry in replacement.claims] == ["Replacement claim"]
+    assert replacement.claims[0].ordinal == 1
 
 
 @pytest.mark.asyncio
@@ -361,6 +736,33 @@ async def test_concurrent_create_uses_one_idempotent_result() -> None:
         )
         assert sum(isinstance(result, ConcurrencyConflict) for result in edits) == 1
         assert sum(not isinstance(result, BaseException) for result in edits) == 1
+        draft_edits = await asyncio.gather(
+            service.update_draft(
+                owner_id,
+                first[0].id,
+                UpdateDraftRequest(expected_revision=2, objectives=["First draft edit"]),
+            ),
+            service.update_draft(
+                owner_id,
+                first[0].id,
+                UpdateDraftRequest(expected_revision=2, objectives=["Second draft edit"]),
+            ),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(result, ConcurrencyConflict) for result in draft_edits) == 1
+        assert sum(not isinstance(result, BaseException) for result in draft_edits) == 1
+        winner = next(result for result in draft_edits if not isinstance(result, BaseException))
+        current = (await service.detail(owner_id, first[0].id)).active_draft
+        assert current.revision == 3 and current.objectives == winner.objectives
+        with pytest.raises(ConcurrencyConflict):
+            await service.update_draft(
+                owner_id,
+                first[0].id,
+                UpdateDraftRequest(expected_revision=2, objectives=["Stale overwrite"]),
+            )
+        assert (
+            await service.detail(owner_id, first[0].id)
+        ).active_draft.objectives == winner.objectives
         async with AsyncSession(engine) as verify:
             assert (
                 await verify.scalar(
@@ -383,6 +785,14 @@ async def test_concurrent_create_uses_one_idempotent_result() -> None:
                     .where(IdempotencyRecord.principal_id == owner_id)
                 )
                 == 1
+            )
+            assert (
+                await verify.scalar(
+                    select(func.count())
+                    .select_from(ReportVersion)
+                    .where(ReportVersion.report_id == first[0].id)
+                )
+                == 0
             )
     finally:
         async with AsyncSession(engine) as cleanup, cleanup.begin():

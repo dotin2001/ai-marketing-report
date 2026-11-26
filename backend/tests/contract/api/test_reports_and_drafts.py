@@ -12,16 +12,25 @@ from app.api.dependencies import (
     get_report_services,
 )
 from app.api.report_schemas import (
+    Chart,
+    Claim,
     DraftDetail,
     DraftReference,
     Page,
     Period,
     ReportDetail,
     ReportSummary,
+    UpdateDraftRequest,
 )
 from app.core.config import Settings
 from app.core.resources import ResourceClients
-from app.domain.reports import InvalidCursor, ReportNotFound, validate_idempotency_key
+from app.db.repositories import ConcurrencyConflict
+from app.domain.reports import (
+    DraftValidationError,
+    InvalidCursor,
+    ReportNotFound,
+    validate_idempotency_key,
+)
 from app.main import create_app
 
 
@@ -40,6 +49,8 @@ class FakeReports:
         self.revision = 1
         self.name = "Quarterly report"
         self.objectives = ["Explain performance"]
+        self.claims: list[Claim] = []
+        self.charts: list[Chart] = []
 
     def detail_model(self) -> ReportDetail:
         now = datetime(2026, 1, 1, tzinfo=UTC)
@@ -48,6 +59,8 @@ class FakeReports:
             report_id=self.id,
             revision=self.revision,
             objectives=self.objectives,
+            claims=self.claims,
+            charts=self.charts,
             current_metric_result_set_id=None,
             current_analysis_result_id=None,
             created_at=now,
@@ -120,6 +133,45 @@ class FakeReports:
         self.revision += 1
         return self.detail_model().active_draft
 
+    async def update_draft(
+        self, owner_id: UUID, report_id: UUID, command: UpdateDraftRequest
+    ) -> DraftDetail:
+        if report_id != self.id:
+            raise ReportNotFound
+        if command.expected_revision != self.revision:
+            raise ConcurrencyConflict
+        if command.claims is not None:
+            self.claims = [
+                Claim(
+                    id=uuid4(),
+                    ordinal=index,
+                    content=item.content,
+                    classification=item.classification,
+                    source_id=item.source_id,
+                )
+                for index, item in enumerate(command.claims, start=1)
+            ]
+        if command.charts is not None:
+            if any(item.metric_result_ids[0] == UUID(int=0) for item in command.charts):
+                raise DraftValidationError(["charts", 0, "metric_result_ids", 0])
+            self.charts = [
+                Chart(
+                    id=uuid4(),
+                    ordinal=index,
+                    chart_type=item.chart_type,
+                    title=item.title,
+                    scope=item.scope,
+                    x_label=item.x_label,
+                    y_label=item.y_label,
+                    metric_result_ids=item.metric_result_ids,
+                )
+                for index, item in enumerate(command.charts, start=1)
+            ]
+        if command.objectives is not None:
+            self.objectives = command.objectives
+        self.revision += 1
+        return self.detail_model().active_draft
+
 
 def client_for(
     settings: Settings, service: FakeReports, *, authenticated: bool = True
@@ -172,6 +224,58 @@ def test_runtime_create_list_detail_and_updates(settings: Settings) -> None:
             json={"expected_revision": 2, "objectives": [" New goal "]},
         )
         assert edited.status_code == 200 and edited.json()["data"]["revision"] == 3
+        metric_id = uuid4()
+        saved = client.patch(
+            f"/api/v1/reports/{service.id}/draft",
+            json={
+                "expected_revision": 3,
+                "claims": [{"content": " User claim ", "classification": "user_claim"}],
+                "charts": [
+                    {
+                        "chart_type": "bar",
+                        "title": " CTR ",
+                        "scope": "report",
+                        "metric_result_ids": [str(metric_id)],
+                    }
+                ],
+            },
+        )
+        assert saved.status_code == 200 and saved.json()["data"]["revision"] == 4
+        assert saved.json()["data"]["claims"][0]["content"] == "User claim"
+        assert saved.json()["data"]["charts"][0]["metric_result_ids"] == [str(metric_id)]
+        reopened = client.get(f"/api/v1/reports/{service.id}").json()["data"]["active_draft"]
+        assert reopened["charts"] == saved.json()["data"]["charts"]
+        assert reopened["claims"] == saved.json()["data"]["claims"]
+        stale = client.patch(
+            f"/api/v1/reports/{service.id}/draft",
+            json={"expected_revision": 3, "claims": []},
+        )
+        assert (stale.status_code, stale.json()["error"]["code"]) == (409, "revision_conflict")
+        invalid_reference = client.patch(
+            f"/api/v1/reports/{service.id}/draft",
+            json={
+                "expected_revision": 4,
+                "charts": [
+                    {
+                        "chart_type": "bar",
+                        "title": "CTR",
+                        "scope": "report",
+                        "metric_result_ids": [str(UUID(int=0))],
+                    }
+                ],
+            },
+        )
+        assert invalid_reference.status_code == 422
+        assert invalid_reference.json()["error"]["details"][0]["path"] == [
+            "charts",
+            0,
+            "metric_result_ids",
+            0,
+        ]
+        assert (
+            client.get(f"/api/v1/reports/{service.id}").json()["data"]["active_draft"]["revision"]
+            == 4
+        )
 
 
 def test_invalid_requests_have_safe_error_details(settings: Settings) -> None:
@@ -219,6 +323,22 @@ def test_invalid_requests_have_safe_error_details(settings: Settings) -> None:
         assert invalid_objective.status_code == 422
         assert service.name == "Quarterly report"
         assert service.objectives == ["Explain performance"]
+        assert (
+            client.patch(
+                f"/api/v1/reports/{service.id}/draft",
+                json={
+                    "expected_revision": 1,
+                    "claims": [],
+                    "current_analysis_result_id": str(uuid4()),
+                },
+            ).json()["error"]["code"]
+            == "validation_failed"
+        )
+        missing = client.patch(
+            f"/api/v1/reports/{uuid4()}/draft",
+            json={"expected_revision": 1, "claims": []},
+        )
+        assert missing.status_code == 404
 
 
 def test_unauthenticated_and_openapi(settings: Settings) -> None:
@@ -230,6 +350,13 @@ def test_unauthenticated_and_openapi(settings: Settings) -> None:
     assert "post" in routes["/api/v1/reports"]
     assert "patch" in routes["/api/v1/reports/{report_id}"]
     assert "patch" in routes["/api/v1/reports/{report_id}/draft"]
+    patch = routes["/api/v1/reports/{report_id}/draft"]["patch"]
+    assert patch["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/UpdateDraftRequest"
+    )
+    assert patch["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/DraftEnvelope"
+    )
     assert "422" in routes["/api/v1/reports"]["post"]["responses"]
     assert (
         "Idempotency-Replayed" in routes["/api/v1/reports"]["post"]["responses"]["201"]["headers"]

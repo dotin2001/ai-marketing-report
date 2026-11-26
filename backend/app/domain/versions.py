@@ -354,9 +354,13 @@ async def save_current_report_version(
     limitations = await _rows(
         session, DraftLimitation, owner_id, report_id, "draft_id", draft_id, DraftLimitation.ordinal
     )
-    claims = await _rows(
-        session, DraftClaim, owner_id, report_id, "draft_id", draft_id, DraftClaim.ordinal
-    )
+    claims = [
+        claim
+        for claim in await _rows(
+            session, DraftClaim, owner_id, report_id, "draft_id", draft_id, DraftClaim.ordinal
+        )
+        if claim.is_active
+    ]
     included_metric_ids = {metric["metric_result_id"] for metric in metrics}
     metric_scopes = {metric["metric_result_id"]: metric["scope"] for metric in metrics}
     current_claim_ids = {claim.id for claim in claims}

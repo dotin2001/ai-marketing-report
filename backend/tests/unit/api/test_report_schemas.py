@@ -13,6 +13,7 @@ from app.api.report_schemas import (
     ObjectivesPatchRequest,
     Period,
     ReportDetail,
+    UpdateDraftRequest,
 )
 
 
@@ -73,6 +74,71 @@ def test_patch_models_require_revision_and_effective_field_shape() -> None:
             MetadataPatchRequest.model_validate(payload)
     with pytest.raises(ValidationError):
         Period.model_validate({"start_date": "2026-01-01T00:00:00", "end_date": "2026-01-01"})
+
+
+def test_draft_patch_distinguishes_omitted_and_empty_collections() -> None:
+    command = UpdateDraftRequest.model_validate({"expected_revision": 1, "claims": []})
+    assert command.claims == [] and command.narrative is None
+    assert command.model_fields_set == {"expected_revision", "claims"}
+    assert UpdateDraftRequest.model_validate(
+        {"expected_revision": 1, "objectives": ["  Goal  "]}
+    ).objectives == ["Goal"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"narrative": [{"section": "other", "content": "Text"}]},
+        {"narrative": [{"section": "summary", "content": " ", "classification": "observation"}]},
+        {"narrative": [{"section": "summary", "content": "Text", "classification": "other"}]},
+        {"claims": [{"content": "Text", "classification": "observation"}]},
+        {"limitations": [{"content": " "}]},
+        {
+            "charts": [
+                {
+                    "chart_type": "pie",
+                    "title": "Chart",
+                    "scope": "report",
+                    "metric_result_ids": [str(uuid4())],
+                }
+            ]
+        },
+        {
+            "charts": [
+                {
+                    "chart_type": "bar",
+                    "title": " ",
+                    "scope": "report",
+                    "metric_result_ids": [str(uuid4())],
+                }
+            ]
+        },
+        {
+            "charts": [
+                {"chart_type": "bar", "title": "Chart", "scope": "report", "metric_result_ids": []}
+            ]
+        },
+        {
+            "charts": [
+                {
+                    "chart_type": "bar",
+                    "title": "Chart",
+                    "scope": "report",
+                    "metric_result_ids": [str(uuid4())],
+                    "value": 9,
+                }
+            ]
+        },
+        {"objectives": []},
+        {"claims": None},
+        {"owner_id": str(uuid4()), "claims": []},
+    ],
+)
+def test_draft_patch_rejects_invalid_or_protected_fields(field: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        UpdateDraftRequest.model_validate({"expected_revision": 1, **field})
+    with pytest.raises(ValidationError):
+        UpdateDraftRequest.model_validate({"expected_revision": 1})
 
 
 def test_public_detail_serialization_excludes_private_fields() -> None:
