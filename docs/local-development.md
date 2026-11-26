@@ -42,6 +42,19 @@ npm run frontend:install
 uv --directory backend sync --locked --all-groups
 ```
 
+PDF rendering uses the pinned Playwright Python package and a locally bundled Noto Sans
+font. Install Playwright's matching Chromium binary on each local or worker runtime:
+
+```sh
+uv --directory backend run playwright install chromium
+```
+
+Set `PDF_RENDER_TIMEOUT_SECONDS` (default `30`, allowed `0 < value <= 120`) and
+`GENERATED_PDF_MAX_BYTES` (default `26214400`) in `backend/.env` to bound rendering.
+`PDF_BROWSER_EXECUTABLE_PATH` may name an absolute Chromium or Chrome binary when
+the Playwright-managed browser is not used. The renderer loads only its packaged
+font and static template; it does not request remote assets or read live report data.
+
 ## Start the foundation
 
 Start in this order from separate terminals where indicated:

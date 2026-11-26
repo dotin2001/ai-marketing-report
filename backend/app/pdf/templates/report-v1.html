@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:">
+  <title>{{ report.report_name }}</title>
+  <style>
+    @font-face { font-family: 'Noto Report'; src: url('{{ font_data_uri }}') format('truetype'); font-weight: 100 900; font-style: normal; font-display: block; }
+    {% include 'report-v1.css' %}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="report-header">
+      <div class="eyebrow">MARKETING PERFORMANCE REPORT</div>
+      <h1>{{ report.report_name }}</h1>
+      <div class="period">{{ report.period_start.isoformat() }} – {{ report.period_end.isoformat() }}</div>
+      <div class="version-line">Version {{ report.version_number }} · {{ report.version_id }} · Saved {{ report.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</div>
+    </header>
+
+    <section class="section objectives">
+      <h2>Objectives</h2>
+      <ol>{% for objective in report.objectives %}<li>{{ objective }}</li>{% endfor %}</ol>
+    </section>
+
+    {% if report.metrics %}
+    <section class="section">
+      <h2>Key performance indicators</h2>
+      <div class="metric-grid">
+      {% for metric in report.metrics %}
+        <article class="metric-card">
+          <div class="metric-name">{{ metric.label }}</div>
+          {% if metric.availability == 'available' %}
+            <div class="metric-value">{{ metric.value }}{% if metric.unit %} <span>{{ metric.unit }}</span>{% endif %}</div>
+          {% else %}
+            <div class="unavailable">Unavailable: {{ metric.reason }}</div>
+          {% endif %}
+          <div class="metric-meta">Scope: {{ metric.scope }}{% if metric.currency %} · Currency: {{ metric.currency }}{% endif %}</div>
+          {% if metric.exact_inputs %}<div class="inputs">Inputs: {% for name, value in metric.exact_inputs %}{{ name }} {{ value }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+        </article>
+      {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if report.charts %}
+    <section class="section charts-section">
+      <h2>Charts</h2>
+      {% for chart in report.charts %}
+      <article class="chart-block">
+        <h3>{{ chart.title }}</h3>
+        <div class="chart-meta">{{ chart.chart_type|capitalize }} · Scope: {{ chart.scope }}{% if chart.x_label %} · X: {{ chart.x_label }}{% endif %}{% if chart.y_label %} · Y: {{ chart.y_label }}{% endif %}</div>
+        {% if chart.display_type == 'bar' %}
+          <div class="bar-chart" role="img" aria-label="Bar chart: {{ chart.title }}">
+          {% for row in chart.rows %}
+            <div class="bar-row"><span class="bar-label">{{ row.label }}</span><div class="bar-track"><div class="bar-fill" style="width: {{ row.bar_width }}%"></div></div><span class="bar-value">{{ row.value }} {{ row.unit }}</span></div>
+          {% endfor %}
+          </div>
+        {% elif chart.display_type == 'line' %}
+          <svg class="line-chart" viewBox="0 0 1000 210" role="img" aria-label="Line chart: {{ chart.title }}"><line x1="40" y1="180" x2="960" y2="180" class="axis"/><polyline points="{{ chart.line_points }}" class="series"/></svg>
+        {% endif %}
+        {% if chart.note %}<p class="chart-note">{{ chart.note }}</p>{% endif %}
+        <table class="chart-values"><thead><tr><th>Metric</th><th>Saved value</th></tr></thead><tbody>
+          {% for row in chart.rows %}<tr><td>{{ row.label }}</td><td>{% if row.value is not none %}{{ row.value }}{% if row.unit %} {{ row.unit }}{% endif %}{% else %}Unavailable: {{ row.reason }}{% endif %}</td></tr>{% endfor %}
+        </tbody></table>
+      </article>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    {% for section in report.narrative %}
+    <section class="section narrative-section">
+      <h2>{{ section.title }}</h2>
+      {% for item in section.items %}<article class="narrative-item"><div class="provenance">{{ item.classification }}</div><p>{{ item.content }}</p></article>{% endfor %}
+    </section>
+    {% endfor %}
+
+    {% if report.limitations %}
+    <section class="section"><h2>Limitations</h2><ul>{% for item in report.limitations %}<li>{{ item }}</li>{% endfor %}</ul></section>
+    {% endif %}
+    {% if report.claims %}
+    <section class="section"><h2>Source claims</h2><p class="disclaimer">The following statements are unvalidated user claims, not computed metrics.</p><ul>{% for claim in report.claims %}<li><span class="claim-label">Unvalidated user claim</span> {{ claim }}</li>{% endfor %}</ul></section>
+    {% endif %}
+  </main>
+</body>
+</html>

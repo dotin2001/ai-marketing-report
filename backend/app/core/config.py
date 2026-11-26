@@ -124,6 +124,12 @@ class Settings(BaseSettings):
         le=1_073_741_824,
         validation_alias="GENERATED_PDF_MAX_BYTES",
     )
+    pdf_render_timeout_seconds: float = Field(
+        default=30, gt=0, le=120, validation_alias="PDF_RENDER_TIMEOUT_SECONDS"
+    )
+    pdf_browser_executable_path: str | None = Field(
+        default=None, validation_alias="PDF_BROWSER_EXECUTABLE_PATH"
+    )
     object_storage_timeout_seconds: float = Field(
         gt=0,
         le=60,
@@ -137,6 +143,15 @@ class Settings(BaseSettings):
         raw = _reject_placeholder(value.get_secret_value())
         if len(raw.encode()) < 32:
             raise ValueError("REPORT_CURSOR_SIGNING_KEY must contain at least 32 bytes")
+        return value
+
+    @field_validator("pdf_browser_executable_path")
+    @classmethod
+    def validate_browser_path(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        if not os.path.isabs(value) or "\x00" in value:
+            raise ValueError("PDF_BROWSER_EXECUTABLE_PATH must be an absolute path")
         return value
 
     @field_validator("openai_api_key")
