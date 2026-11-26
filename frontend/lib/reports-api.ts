@@ -1,4 +1,8 @@
 /** Typed, same-origin boundary for the report-management API. */
+import { record, request, ReportApiError } from "@/lib/api-client";
+
+export { ReportApiError } from "@/lib/api-client";
+export type { ApiFieldDetail } from "@/lib/api-client";
 
 export type ReportStage =
   | "created"
@@ -19,6 +23,7 @@ export interface ReportSummary {
 
 export interface ReportDetail extends ReportSummary {
   objectives: string[];
+  current_source_id: string | null;
 }
 
 export interface PageInfo {
@@ -36,31 +41,6 @@ export interface CreateReportCommand {
   name: string;
   period: { start_date: string; end_date: string };
   objectives: string[];
-}
-
-export interface ApiFieldDetail {
-  code: string;
-  message: string;
-  path: (string | number)[];
-}
-
-export class ReportApiError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly code: string,
-    message: string,
-    public readonly retryable: boolean,
-    public readonly details: ApiFieldDetail[] = [],
-  ) {
-    super(message);
-    this.name = "ReportApiError";
-  }
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function string(value: unknown): string | null {
@@ -90,10 +70,11 @@ function parseSummary(value: unknown): ReportSummary {
 function parseDetail(value: unknown): ReportDetail {
   const summary = parseSummary(value);
   const item = record(value);
-  if (!Array.isArray(item?.objectives) || !item.objectives.every((entry) => typeof entry === "string")) {
+  if (!Array.isArray(item?.objectives) || !item.objectives.every((entry) => typeof entry === "string") ||
+    !(item.current_source_id === null || typeof item.current_source_id === "string")) {
     throw new ReportApiError(502, "invalid_response", "The report response was invalid.", true);
   }
-  return { ...summary, objectives: item.objectives as string[] };
+  return { ...summary, objectives: item.objectives as string[], current_source_id: item.current_source_id as string | null };
 }
 
 function parsePage(value: unknown): ReportPage {
@@ -115,59 +96,6 @@ function parsePage(value: unknown): ReportPage {
       next_cursor: page.next_cursor as string | null,
     },
   };
-}
-
-function parseFieldDetails(value: unknown): ApiFieldDetail[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    const detail = record(entry);
-    if (
-      !detail || typeof detail.code !== "string" || typeof detail.message !== "string" ||
-      !Array.isArray(detail.path) ||
-      !detail.path.every((part) => typeof part === "string" || Number.isInteger(part))
-    ) return [];
-    return [{
-      code: detail.code,
-      message: detail.message,
-      path: detail.path as (string | number)[],
-    }];
-  });
-}
-
-async function request(path: string, init?: RequestInit): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/v1${path}`, {
-      credentials: "same-origin",
-      cache: "no-store",
-      ...init,
-    });
-  } catch {
-    throw new ReportApiError(0, "network_error", "Could not connect to the report service.", true);
-  }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
-  }
-  if (!response.ok) {
-    const error = record(record(body)?.error);
-    const code = string(error?.code) ?? (response.status === 401 ? "unauthenticated" : "request_failed");
-    const message = string(error?.message) ?? (
-      response.status === 401
-        ? "Authentication is required to view reports."
-        : "The report request could not be completed."
-    );
-    throw new ReportApiError(
-      response.status,
-      code,
-      message,
-      error?.retryable === true,
-      parseFieldDetails(error?.details),
-    );
-  }
-  return body;
 }
 
 export async function listReports(cursor?: string): Promise<ReportPage> {

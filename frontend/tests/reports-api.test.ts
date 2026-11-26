@@ -40,7 +40,7 @@ describe("report API boundary", () => {
 
   it("sends the creation key and keeps the report detail typed", async () => {
     const fetcher = vi.fn().mockImplementation(async () =>
-      json({ data: { ...summary, objectives: ["Growth"] } }, 201));
+      json({ data: { ...summary, objectives: ["Growth"], current_source_id: null } }, 201));
     vi.stubGlobal("fetch", fetcher);
 
     const command = {
@@ -55,6 +55,16 @@ describe("report API boundary", () => {
       body: JSON.stringify(command),
     }));
     expect((await getReport(summary.id)).objectives).toEqual(["Growth"]);
+    expect((await getReport(summary.id)).current_source_id).toBeNull();
+  });
+
+  it("retains a current source ID and rejects malformed report detail", async () => {
+    const sourceId = "11111111-1111-4111-8111-111111111111";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ data: {
+      ...summary, objectives: ["Growth"], current_source_id: sourceId,
+    } })).mockResolvedValueOnce(json({ data: { ...summary, objectives: ["Growth"] } })));
+    expect((await getReport(summary.id)).current_source_id).toBe(sourceId);
+    await expect(getReport(summary.id)).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   it("keeps authentication separate from an empty collection", async () => {

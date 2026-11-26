@@ -22,6 +22,7 @@ const report = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
   objectives: ["Understand lead quality"],
+  current_source_id: null,
 };
 
 function fillValid() {

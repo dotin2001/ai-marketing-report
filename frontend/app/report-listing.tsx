@@ -15,13 +15,13 @@ const createLinkClasses = "inline-flex min-h-11 items-center justify-center gap-
 function ReportCard({ report }: { report: ReportSummary }) {
   return (
     <article className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm sm:p-6">
-      <div className="flex items-start gap-4">
+      <Link href={`/reports/${encodeURIComponent(report.id)}/import`} className="flex items-start gap-4 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]" aria-label={`Import data for ${report.name}`}>
         <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[var(--accent)]" aria-hidden="true"><FileText size={20} /></div>
         <div className="min-w-0 flex-1">
           <h2 className="break-words text-lg font-semibold tracking-tight text-neutral-950">{report.name}</h2>
           <p className="mt-1 text-sm text-neutral-600">{formatCalendarDate(report.period.start_date)} – {formatCalendarDate(report.period.end_date)}</p>
         </div>
-      </div>
+      </Link>
       <div className="mt-6 flex items-center justify-between border-t border-neutral-100 pt-4">
         <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800">{stageLabel(report.stage)}</span>
         <span className="text-xs text-neutral-500">Report</span>

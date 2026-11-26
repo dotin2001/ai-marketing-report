@@ -42,6 +42,7 @@ describe("report listing", () => {
     expect(screen.getByText("Jan 1, 2026 – Mar 31, 2026")).toBeInTheDocument();
     expect(screen.getByText("Ready for analysis")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New report" })).toHaveAttribute("href", "/reports/new");
+    expect(screen.getByRole("link", { name: "Import data for Q1 acquisition" })).toHaveAttribute("href", `/reports/${report.id}/import`);
   });
 
   it("shows an empty state only for a successful empty response", async () => {
@@ -100,7 +101,7 @@ describe("report listing", () => {
   it("reauthorizes a created ID and shows an older replay outside the first page", async () => {
     const newer = { ...report, id: "33333333-3333-4333-8333-333333333333", name: "Newer report" };
     listMock.mockResolvedValue(page([newer]));
-    detailMock.mockResolvedValue({ ...report, objectives: ["Growth"] });
+    detailMock.mockResolvedValue({ ...report, objectives: ["Growth"], current_source_id: null });
     render(<ReportListing createdId={report.id} />);
     expect(await screen.findByText("Q1 acquisition")).toBeInTheDocument();
     expect(screen.getByText("Newer report")).toBeInTheDocument();
@@ -114,7 +115,7 @@ describe("report listing", () => {
     expect(await screen.findByText("Q1 acquisition")).toBeInTheDocument();
     expect(screen.getAllByText("Q1 acquisition")).toHaveLength(1);
     first.unmount();
-    detailMock.mockResolvedValue({ ...report, objectives: ["Growth"] });
+    detailMock.mockResolvedValue({ ...report, objectives: ["Growth"], current_source_id: null });
     render(<ReportListing createdId={report.id} />);
     await waitFor(() => expect(detailMock).toHaveBeenCalledTimes(2));
     expect(screen.getAllByText("Q1 acquisition")).toHaveLength(1);
