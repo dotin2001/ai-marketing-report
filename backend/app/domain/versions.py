@@ -80,6 +80,7 @@ async def save_current_report_version(
     expected_revision: int,
     template_version: str,
     idempotency_key: str,
+    replayed: list[bool] | None = None,
 ) -> ReportVersion:
     """Save one coherent schema 2 snapshot within the caller's transaction."""
     fingerprint = sha256(
@@ -103,6 +104,8 @@ async def save_current_report_version(
         command_fingerprint=fingerprint,
     )
     if record.result_id is not None:
+        if replayed is not None:
+            replayed.append(True)
         replay = await get_version(
             session, owner_id=owner_id, report_id=report_id, version_id=record.result_id
         )
@@ -530,6 +533,7 @@ async def restore_saved_version(
     expected_draft_id: UUID,
     expected_revision: int,
     idempotency_key: str,
+    replayed: list[bool] | None = None,
 ) -> ReportDraft:
     """Copy editable saved fields into a new active draft, with scoped replay."""
     fingerprint = sha256(
@@ -553,6 +557,8 @@ async def restore_saved_version(
         command_fingerprint=fingerprint,
     )
     if record.result_id is not None:
+        if replayed is not None:
+            replayed.append(True)
         replay = await session.scalar(
             select(ReportDraft).where(
                 ReportDraft.id == record.result_id,
@@ -576,6 +582,6 @@ async def restore_saved_version(
         record=record,
         result_type="report_draft",
         result_id=restored.id,
-        success_status=201,
+        success_status=200,
     )
     return restored

@@ -15,6 +15,7 @@ from app.api.health import router as health_router
 from app.api.pdf_downloads import router as pdf_download_router
 from app.api.reports import router as report_router
 from app.api.sources import router as source_router
+from app.api.versions import router as version_router
 from app.core.config import Settings
 from app.core.health import ResourceProbeProvider
 from app.core.resources import ResourceClients, create_resource_clients
@@ -26,6 +27,7 @@ from app.domain.import_confirmation import ImportConfirmationServices
 from app.domain.import_review import ImportReviewServices
 from app.domain.reports import ReportServices
 from app.domain.sources import SourceServices
+from app.domain.version_service import VersionServices
 from app.storage.coordinator import StorageCoordinator
 from app.storage.keys import TrustedKeyBuilder
 from app.storage.s3 import S3ObjectStorage
@@ -46,6 +48,10 @@ def create_app(
         app.state.object_storage = S3ObjectStorage(clients.object_storage)
         if hasattr(clients, "postgresql"):
             app.state.report_services = ReportServices(
+                sessions=create_session_factory(clients.postgresql),
+                cursor_secret=resolved_settings.report_cursor_signing_key.get_secret_value(),
+            )
+            app.state.version_services = VersionServices(
                 sessions=create_session_factory(clients.postgresql),
                 cursor_secret=resolved_settings.report_cursor_signing_key.get_secret_value(),
             )
@@ -100,6 +106,7 @@ def create_app(
     application.include_router(health_router)
     application.include_router(pdf_download_router)
     application.include_router(report_router)
+    application.include_router(version_router)
     application.include_router(source_router)
     application.include_router(dataset_router)
     application.include_router(analysis_job_router)

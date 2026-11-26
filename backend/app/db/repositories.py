@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from hashlib import sha256
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1536,6 +1536,32 @@ async def list_versions(
         select(ReportVersion)
         .where(ReportVersion.owner_id == owner_id, ReportVersion.report_id == report_id)
         .order_by(ReportVersion.version_number.desc(), ReportVersion.id.desc())
+    )
+    return result.all()
+
+
+async def list_versions_page(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    limit: int,
+    before: tuple[int, UUID] | None = None,
+) -> Sequence[ReportVersion]:
+    query = select(ReportVersion).where(
+        ReportVersion.owner_id == owner_id, ReportVersion.report_id == report_id
+    )
+    if before is not None:
+        query = query.where(
+            or_(
+                ReportVersion.version_number < before[0],
+                and_(ReportVersion.version_number == before[0], ReportVersion.id < before[1]),
+            )
+        )
+    result = await session.scalars(
+        query.order_by(ReportVersion.version_number.desc(), ReportVersion.id.desc()).limit(
+            limit + 1
+        )
     )
     return result.all()
 

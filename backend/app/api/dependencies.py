@@ -10,6 +10,7 @@ from fastapi import Request
 from app.api.errors import APIError
 from app.domain.assets import AssetServices
 from app.domain.reports import ReportServices
+from app.domain.version_service import VersionServices
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,4 +33,9 @@ def get_asset_services(request: Request) -> AssetServices:
 
 def get_report_services(request: Request) -> ReportServices:
     service: ReportServices = request.app.state.report_services
+    return service
+
+
+def get_version_services(request: Request) -> VersionServices:
+    service: VersionServices = request.app.state.version_services
     return service

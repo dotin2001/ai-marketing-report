@@ -243,6 +243,17 @@ class ReportServices:
     async def _detail(self, session: AsyncSession, report: Report) -> ReportDetail:
         summary = await self._summary(session, report)
         draft = await self._draft(session, report)
+        detail = await self.draft_detail(session, report, draft)
+        return ReportDetail(
+            **summary.model_dump(mode="json", exclude={"active_draft"}),
+            objectives=detail.objectives,
+            active_draft=detail,
+            current_metric_result_set_id=report.current_metric_result_set_id,
+        )
+
+    async def draft_detail(
+        self, session: AsyncSession, report: Report, draft: ReportDraft
+    ) -> DraftDetail:
         objectives = list(
             await session.scalars(
                 select(DraftObjective.content)
@@ -321,7 +332,7 @@ class ReportServices:
         references_by_chart: dict[UUID, list[UUID]] = {chart_id: [] for chart_id in chart_ids}
         for reference in chart_references:
             references_by_chart[reference.chart_id].append(reference.metric_result_id)
-        detail = DraftDetail(
+        return DraftDetail(
             id=draft.id,
             report_id=report.id,
             revision=draft.revision,
@@ -367,12 +378,6 @@ class ReportServices:
             current_analysis_result_id=draft.current_analysis_result_id,
             created_at=draft.created_at,
             updated_at=draft.updated_at,
-        )
-        return ReportDetail(
-            **summary.model_dump(mode="json", exclude={"active_draft"}),
-            objectives=objectives,
-            active_draft=detail,
-            current_metric_result_set_id=report.current_metric_result_set_id,
         )
 
     async def create(
