@@ -464,3 +464,56 @@ async def test_pdf_cross_version_lookup_and_tampered_retrieval_fail_closed(
             export_id=export.id,
         )
     assert integrity.value.code is StorageErrorCode.INTEGRITY_FAILED
+
+
+@pytest.mark.asyncio
+async def test_pdf_uncertain_commit_reconciles_matching_asset(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, report, version, export, input_identity = await seeded_export(db_session)
+    fake = FakeObjectStorage()
+    service = services_for(db_session, fake)
+    data = b"%PDF-1.7\nverified"
+    committed = await service.store_generated_pdf(
+        owner_id=owner.id,
+        report_id=report.id,
+        version_id=version.id,
+        export_id=export.id,
+        input_identity=input_identity,
+        expected_attempt_count=1,
+        content=BytesIO(data),
+    )
+    identity = TrustedKeyBuilder(environment="test", bucket="private-test").generated_pdf(
+        owner_id=owner.id,
+        report_id=report.id,
+        version_id=version.id,
+        export_id=export.id,
+        attempt_ordinal=1,
+    )
+    metadata = ObjectMetadata(
+        identity=identity,
+        owner_id=owner.id,
+        report_id=report.id,
+        logical_id=export.id,
+        content_type="application/pdf",
+        byte_size=len(data),
+        checksum_sha256=sha256(data).hexdigest(),
+    )
+    assert await fake.delete_exact(metadata, created_by_invocation=True)
+
+    async def uncertain_commit(*_: object, **__: object) -> FileAsset:
+        raise RuntimeError("commit outcome was uncertain")
+
+    monkeypatch.setattr(asset_module, "finish_pdf_export", uncertain_commit)
+    reconciled = await service.store_generated_pdf(
+        owner_id=owner.id,
+        report_id=report.id,
+        version_id=version.id,
+        export_id=export.id,
+        input_identity=input_identity,
+        expected_attempt_count=1,
+        content=BytesIO(data),
+    )
+    assert reconciled.id == committed.id
+    assert await fake.head(identity) == metadata

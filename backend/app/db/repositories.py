@@ -1744,7 +1744,12 @@ async def create_pdf_export(
 
 
 async def claim_pdf_export(
-    session: AsyncSession, *, owner_id: UUID, report_id: UUID, export_id: UUID
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    export_id: UUID,
+    expected_attempt_count: int | None = None,
 ) -> bool:
     async with session.begin_nested():
         export = await session.scalar(
@@ -1756,7 +1761,14 @@ async def claim_pdf_export(
             )
             .with_for_update()
         )
-        if export is None or export.state != "queued":
+        if (
+            export is None
+            or export.state != "queued"
+            or (
+                expected_attempt_count is not None
+                and export.attempt_count != expected_attempt_count
+            )
+        ):
             return False
         now = datetime.now(UTC)
         changed = await session.execute(
@@ -1797,6 +1809,17 @@ async def finish_pdf_export(
         )
         if export is None or export.attempt_count != expected_attempt_count:
             raise ConcurrencyConflict("PDF completion state is stale")
+        version = await get_version(
+            session, owner_id=owner_id, report_id=report_id, version_id=export.version_id
+        )
+        if (
+            version is None
+            or export.snapshot_identity != version.snapshot_identity
+            or export.template_version != version.template_version
+            or export.input_identity
+            != sha256(version.snapshot_identity + version.template_version.encode()).digest()
+        ):
+            raise ConcurrencyConflict("PDF immutable input binding is stale")
         if (
             asset.owner_id != owner_id
             or asset.report_id != report_id
@@ -1955,6 +1978,36 @@ async def list_pdf_exports(
     return result.all()
 
 
+async def list_pdf_exports_page(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+    report_id: UUID,
+    version_id: UUID,
+    limit: int,
+    before: tuple[datetime, UUID] | None = None,
+) -> Sequence[PdfExport]:
+    if not 1 <= limit <= 100:
+        raise ValueError("PDF export page limit is invalid")
+    query = select(PdfExport).where(
+        PdfExport.owner_id == owner_id,
+        PdfExport.report_id == report_id,
+        PdfExport.version_id == version_id,
+    )
+    if before is not None:
+        created_at, export_id = before
+        query = query.where(
+            or_(
+                PdfExport.created_at < created_at,
+                and_(PdfExport.created_at == created_at, PdfExport.id < export_id),
+            )
+        )
+    result = await session.scalars(
+        query.order_by(PdfExport.created_at.desc(), PdfExport.id.desc()).limit(limit + 1)
+    )
+    return result.all()
+
+
 async def retry_pdf_export(
     session: AsyncSession,
     *,
@@ -1973,13 +2026,23 @@ async def retry_pdf_export(
             )
             .with_for_update()
         )
-        if (
-            export is None
-            or export.state != "failed"
-            or export.failure_retryable is not True
-            or export.attempt_count != expected_attempt_count
-        ):
+        if export is None:
             raise ConcurrencyConflict("PDF retry state is stale")
+        if export.attempt_count != expected_attempt_count:
+            raise ConcurrencyConflict("PDF retry attempt is stale")
+        if export.state != "failed" or export.failure_retryable is not True:
+            raise JobNotRetryable("PDF export cannot be retried")
+        version = await get_version(
+            session, owner_id=owner_id, report_id=report_id, version_id=export.version_id
+        )
+        if (
+            version is None
+            or export.snapshot_identity != version.snapshot_identity
+            or export.template_version != version.template_version
+            or export.input_identity
+            != sha256(version.snapshot_identity + version.template_version.encode()).digest()
+        ):
+            raise ConcurrencyConflict("PDF immutable input binding is stale")
         next_ordinal = expected_attempt_count + 1
         export.state = "queued"
         export.attempt_count = next_ordinal
@@ -1998,3 +2061,45 @@ async def retry_pdf_export(
         )
         await session.flush()
         return next_ordinal
+
+
+async def queued_pdf_attempts(
+    session: AsyncSession, *, limit: int = 100
+) -> list[tuple[UUID, UUID, UUID, int]]:
+    if not 1 <= limit <= 500:
+        raise ValueError("invalid recovery batch size")
+    rows = await session.execute(
+        select(PdfExport.owner_id, PdfExport.report_id, PdfExport.id, PdfExport.attempt_count)
+        .join(
+            PdfExportAttempt,
+            (PdfExportAttempt.export_id == PdfExport.id)
+            & (PdfExportAttempt.attempt_ordinal == PdfExport.attempt_count),
+        )
+        .where(PdfExport.state == "queued", PdfExportAttempt.state == "queued")
+        .order_by(PdfExportAttempt.queued_at, PdfExport.id)
+        .limit(limit)
+    )
+    return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+
+async def stale_running_pdf_attempts(
+    session: AsyncSession, *, before: datetime, limit: int = 100
+) -> list[tuple[UUID, UUID, UUID, int]]:
+    if not 1 <= limit <= 500 or before.tzinfo is None:
+        raise ValueError("invalid stale running scan")
+    rows = await session.execute(
+        select(PdfExport.owner_id, PdfExport.report_id, PdfExport.id, PdfExport.attempt_count)
+        .join(
+            PdfExportAttempt,
+            (PdfExportAttempt.export_id == PdfExport.id)
+            & (PdfExportAttempt.attempt_ordinal == PdfExport.attempt_count),
+        )
+        .where(
+            PdfExport.state == "running",
+            PdfExportAttempt.state == "running",
+            PdfExportAttempt.started_at < before,
+        )
+        .order_by(PdfExportAttempt.started_at, PdfExport.id)
+        .limit(limit)
+    )
+    return [(row[0], row[1], row[2], row[3]) for row in rows]

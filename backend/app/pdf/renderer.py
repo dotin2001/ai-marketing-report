@@ -79,5 +79,7 @@ class PdfRenderer:
             return validate_pdf_bytes(data, self.max_bytes)
         except PdfRenderFailure:
             raise
+        except TimeoutError:
+            raise PdfRenderFailure("renderer_timeout") from None
         except Exception:
             raise PdfRenderFailure("render_failed") from None

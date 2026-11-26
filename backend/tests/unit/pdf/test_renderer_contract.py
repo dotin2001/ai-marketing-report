@@ -98,4 +98,4 @@ async def test_renderer_sanitizes_launch_timeout_and_invalid_output(
     monkeypatch.setattr(renderer, "_render_html", slow)
     with pytest.raises(PdfRenderFailure) as error:
         await renderer.render(version)
-    assert error.value.code == "render_failed"
+    assert error.value.code == "renderer_timeout"

@@ -4,7 +4,7 @@ from celery import Celery
 
 from app.core.config import Settings
 
-celery_app = Celery("analysis", include=["app.jobs.analysis_worker"])
+celery_app = Celery("report_jobs", include=["app.jobs.analysis_worker", "app.jobs.pdf_worker"])
 
 
 def configure_celery(app: Celery, config: Settings) -> Celery:
@@ -20,6 +20,7 @@ def configure_celery(app: Celery, config: Settings) -> Celery:
             "socket_timeout": config.analysis_publish_timeout_seconds,
         },
         task_time_limit=config.analysis_task_time_limit_seconds,
+        task_annotations={"pdf.execute": {"time_limit": config.pdf_task_time_limit_seconds}},
         task_serializer="json",
         accept_content=["json"],
     )

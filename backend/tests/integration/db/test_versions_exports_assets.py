@@ -11,8 +11,14 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from app.api.version_schemas import CreatePdfExportRequest
 from app.db import Base
 from app.db.models import (
     AnalysisResult,
@@ -39,6 +45,7 @@ from app.db.repositories import (
     get_pdf_export,
     get_version,
     list_pdf_exports,
+    list_pdf_exports_page,
     list_versions,
     report_snapshot_identity,
     resolve_idempotency,
@@ -49,10 +56,139 @@ from app.db.repositories import (
 from app.db.snapshots import ReportVersionSnapshot
 from app.db.testing import validate_test_database
 from app.domain.analysis_jobs import current_analysis_input
+from app.domain.pdf_exports import PdfExportServices
 from tests.integration.db.conftest import seed_report
 from tests.integration.db.test_datasets_and_metrics import seed_dataset_metric_aggregate
 
 pytestmark = pytest.mark.postgres
+
+
+@pytest.mark.asyncio
+async def test_pdf_export_page_is_bounded_and_version_scoped(db_session: AsyncSession) -> None:
+    owner, report, draft = await seed_report(db_session, subject="pdf-page-owner")
+    other_owner, other_report, _ = await seed_report(db_session, subject="pdf-page-other")
+    version_snapshot = snapshot(report.id)
+    version = await create_report_version(
+        db_session,
+        owner_id=owner.id,
+        report_id=report.id,
+        draft_id=draft.id,
+        expected_revision=1,
+        snapshot=version_snapshot,
+        snapshot_identity=report_snapshot_identity(version_snapshot),
+        template_version="report-v1",
+    )
+    export = await create_pdf_export(
+        db_session,
+        owner_id=owner.id,
+        report_id=report.id,
+        version_id=version.id,
+        input_identity=sha256(version.snapshot_identity + b"report-v1").digest(),
+    )
+    rows = await list_pdf_exports_page(
+        db_session, owner_id=owner.id, report_id=report.id, version_id=version.id, limit=1
+    )
+    assert [row.id for row in rows] == [export.id]
+    assert (
+        await list_pdf_exports_page(
+            db_session,
+            owner_id=owner.id,
+            report_id=report.id,
+            version_id=version.id,
+            limit=1,
+            before=(export.created_at, export.id),
+        )
+        == []
+    )
+    assert (
+        await list_pdf_exports_page(
+            db_session,
+            owner_id=other_owner.id,
+            report_id=other_report.id,
+            version_id=version.id,
+            limit=1,
+        )
+        == []
+    )
+    with pytest.raises(ValueError):
+        await list_pdf_exports_page(
+            db_session, owner_id=owner.id, report_id=report.id, version_id=version.id, limit=101
+        )
+
+
+@pytest.mark.asyncio
+async def test_pdf_attempt_claim_race_has_one_winner(concurrent_engine: AsyncEngine) -> None:
+    async with AsyncSession(concurrent_engine, expire_on_commit=False) as session:
+        async with session.begin():
+            owner, report, draft = await seed_report(session, subject=f"pdf-claim-{uuid4()}")
+            version_snapshot = snapshot(report.id)
+            version = await create_report_version(
+                session,
+                owner_id=owner.id,
+                report_id=report.id,
+                draft_id=draft.id,
+                expected_revision=1,
+                snapshot=version_snapshot,
+                snapshot_identity=report_snapshot_identity(version_snapshot),
+                template_version="report-v1",
+            )
+            export = await create_pdf_export(
+                session,
+                owner_id=owner.id,
+                report_id=report.id,
+                version_id=version.id,
+                input_identity=sha256(version.snapshot_identity + b"report-v1").digest(),
+            )
+
+    async def claim() -> bool:
+        async with AsyncSession(concurrent_engine) as session:
+            async with session.begin():
+                return await claim_pdf_export(
+                    session,
+                    owner_id=owner.id,
+                    report_id=report.id,
+                    export_id=export.id,
+                    expected_attempt_count=1,
+                )
+
+    assert sorted(await asyncio.gather(claim(), claim())) == [False, True]
+    async with AsyncSession(concurrent_engine) as session:
+        attempt = await session.scalar(
+            select(PdfExportAttempt).where(PdfExportAttempt.export_id == export.id)
+        )
+        assert attempt is not None and attempt.state == "running"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pdf_create_clicks_share_export(concurrent_engine: AsyncEngine) -> None:
+    async with AsyncSession(concurrent_engine, expire_on_commit=False) as session:
+        async with session.begin():
+            owner, report, draft = await seed_report(session, subject=f"pdf-create-{uuid4()}")
+            version_snapshot = snapshot(report.id)
+            version = await create_report_version(
+                session,
+                owner_id=owner.id,
+                report_id=report.id,
+                draft_id=draft.id,
+                expected_revision=1,
+                snapshot=version_snapshot,
+                snapshot_identity=report_snapshot_identity(version_snapshot),
+                template_version="report-v1",
+            )
+    service = PdfExportServices(
+        async_sessionmaker(concurrent_engine, expire_on_commit=False),
+        "cursor-secret",
+        publisher=lambda *_: None,
+    )
+    command = CreatePdfExportRequest(template_version="report-v1")
+    first, second = await asyncio.gather(
+        service.create(owner.id, report.id, version.id, command, "click-a"),
+        service.create(owner.id, report.id, version.id, command, "click-b"),
+    )
+    assert first[0].id == second[0].id
+    async with AsyncSession(concurrent_engine) as session:
+        assert await session.scalar(select(func.count()).select_from(PdfExportAttempt)) == 1
+        assert await session.scalar(select(func.count()).select_from(ReportVersion)) == 1
 
 
 @pytest.fixture

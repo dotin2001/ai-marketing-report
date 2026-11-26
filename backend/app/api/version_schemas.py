@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field, StrictInt
@@ -25,16 +26,63 @@ class ListVersionsQuery(StrictModel):
     cursor: str | None = None
 
 
+class CreatePdfExportRequest(StrictModel):
+    template_version: Literal["report-v1"]
+
+
+class RetryPdfExportRequest(StrictModel):
+    input_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_attempt_count: StrictInt = Field(ge=1)
+
+
+class PdfExportFailure(StrictModel):
+    code: str
+    message: str
+    retryable: bool
+
+
+class PdfExportAttemptDetail(StrictModel):
+    ordinal: int
+    state: Literal["queued", "running", "succeeded", "failed"]
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    failure: PdfExportFailure | None
+
+
+class PdfExportFile(StrictModel):
+    filename: str
+    content_type: Literal["application/pdf"]
+    byte_size: int = Field(gt=0)
+    checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
+    download_available: bool
+
+
 class PdfExportSummary(PublicModel):
     id: UUID
     report_id: UUID
     version_id: UUID
     template_version: str
     input_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    state: str
+    state: Literal["queued", "running", "succeeded", "failed"]
     attempt_count: int
     created_at: datetime
     updated_at: datetime
+    failure: PdfExportFailure | None = None
+
+
+class PdfExportDetail(PdfExportSummary):
+    attempts: list[PdfExportAttemptDetail]
+    file: PdfExportFile | None
+
+
+class PdfExportEnvelope(StrictModel):
+    data: PdfExportDetail
+
+
+class PdfExportListEnvelope(StrictModel):
+    data: list[PdfExportSummary]
+    page: Page
 
 
 class VersionSummary(PublicModel):

@@ -13,6 +13,7 @@ from app.api.datasets import router as dataset_router
 from app.api.errors import APIError, api_error_handler, request_validation_handler
 from app.api.health import router as health_router
 from app.api.pdf_downloads import router as pdf_download_router
+from app.api.pdf_exports import router as pdf_export_router
 from app.api.reports import router as report_router
 from app.api.sources import router as source_router
 from app.api.versions import router as version_router
@@ -25,6 +26,7 @@ from app.domain.assets import AssetServices
 from app.domain.dataset_reads import DatasetReadServices
 from app.domain.import_confirmation import ImportConfirmationServices
 from app.domain.import_review import ImportReviewServices
+from app.domain.pdf_exports import PdfExportServices
 from app.domain.reports import ReportServices
 from app.domain.sources import SourceServices
 from app.domain.version_service import VersionServices
@@ -52,6 +54,10 @@ def create_app(
                 cursor_secret=resolved_settings.report_cursor_signing_key.get_secret_value(),
             )
             app.state.version_services = VersionServices(
+                sessions=create_session_factory(clients.postgresql),
+                cursor_secret=resolved_settings.report_cursor_signing_key.get_secret_value(),
+            )
+            app.state.pdf_export_services = PdfExportServices(
                 sessions=create_session_factory(clients.postgresql),
                 cursor_secret=resolved_settings.report_cursor_signing_key.get_secret_value(),
             )
@@ -105,6 +111,7 @@ def create_app(
     application.add_exception_handler(RequestValidationError, request_validation_handler)  # type: ignore[arg-type]
     application.include_router(health_router)
     application.include_router(pdf_download_router)
+    application.include_router(pdf_export_router)
     application.include_router(report_router)
     application.include_router(version_router)
     application.include_router(source_router)

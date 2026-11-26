@@ -9,6 +9,7 @@ from fastapi import Request
 
 from app.api.errors import APIError
 from app.domain.assets import AssetServices
+from app.domain.pdf_exports import PdfExportServices
 from app.domain.reports import ReportServices
 from app.domain.version_service import VersionServices
 
@@ -38,4 +39,9 @@ def get_report_services(request: Request) -> ReportServices:
 
 def get_version_services(request: Request) -> VersionServices:
     service: VersionServices = request.app.state.version_services
+    return service
+
+
+def get_pdf_export_services(request: Request) -> PdfExportServices:
+    service: PdfExportServices = request.app.state.pdf_export_services
     return service

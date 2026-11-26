@@ -265,6 +265,8 @@ class AssetServices:
                 raise ResourceNotFound
             if aggregate.export.input_identity != input_identity:
                 raise ConcurrencyConflict("PDF input identity is stale")
+            if aggregate.export.attempt_count != expected_attempt_count:
+                raise ConcurrencyConflict("PDF attempt is stale")
             if aggregate.export.state not in {"running", "succeeded"}:
                 raise ConcurrencyConflict("PDF completion state is stale")
             version_number = aggregate.version.version_number
@@ -276,6 +278,7 @@ class AssetServices:
                 report_id=report_id,
                 version_id=version_id,
                 export_id=export_id,
+                attempt_ordinal=expected_attempt_count,
             ),
             owner_id=owner_id,
             report_id=report_id,

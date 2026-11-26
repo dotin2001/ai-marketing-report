@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     analysis_stale_running_seconds: int = Field(
         default=600, ge=11, le=7200, validation_alias="ANALYSIS_STALE_RUNNING_SECONDS"
     )
+    pdf_task_time_limit_seconds: int = Field(
+        default=180, ge=10, le=3600, validation_alias="PDF_TASK_TIME_LIMIT_SECONDS"
+    )
+    pdf_stale_running_seconds: int = Field(
+        default=360, ge=11, le=7200, validation_alias="PDF_STALE_RUNNING_SECONDS"
+    )
     openai_api_key: SecretStr = Field(validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(min_length=1, max_length=255, validation_alias="OPENAI_MODEL")
     openai_timeout_seconds: float = Field(gt=0, le=300, validation_alias="OPENAI_TIMEOUT_SECONDS")
@@ -221,4 +227,15 @@ class Settings(BaseSettings):
         if self.app_env in {"staging", "production"}:
             if not self.s3_use_ssl or urlsplit(self.s3_endpoint_url).scheme != "https":
                 raise ValueError("non-local object storage must use HTTPS")
+        return self
+
+    @model_validator(mode="after")
+    def validate_pdf_timeouts(self) -> Self:
+        if self.pdf_stale_running_seconds <= self.pdf_task_time_limit_seconds:
+            raise ValueError("PDF_STALE_RUNNING_SECONDS must exceed PDF_TASK_TIME_LIMIT_SECONDS")
+        if (
+            self.pdf_render_timeout_seconds + self.object_storage_timeout_seconds + 5
+            >= self.pdf_task_time_limit_seconds
+        ):
+            raise ValueError("PDF task time limit must allow rendering, storage, and completion")
         return self

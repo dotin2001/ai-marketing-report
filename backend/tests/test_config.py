@@ -46,6 +46,8 @@ def test_valid_local_configuration_loads(valid_settings_data: dict[str, Any]) ->
     assert settings.analysis_publish_timeout_seconds == 3
     assert settings.analysis_task_time_limit_seconds == 300
     assert settings.analysis_stale_running_seconds == 600
+    assert settings.pdf_task_time_limit_seconds == 180
+    assert settings.pdf_stale_running_seconds == 360
     assert settings.openai_model == "unit-test-model"
     assert settings.openai_timeout_seconds == 60
     assert "unit-test-openai-key" not in repr(settings)
@@ -96,6 +98,24 @@ def test_openai_settings_reject_blank_and_unsafe_values(
     ],
 )
 def test_analysis_worker_limits_are_bounded(
+    valid_settings_data: dict[str, Any], name: str, value: int
+) -> None:
+    with pytest.raises(ValidationError):
+        build({**valid_settings_data, name: value})
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("PDF_TASK_TIME_LIMIT_SECONDS", 9),
+        ("PDF_TASK_TIME_LIMIT_SECONDS", 3601),
+        ("PDF_STALE_RUNNING_SECONDS", 10),
+        ("PDF_STALE_RUNNING_SECONDS", 7201),
+        ("PDF_STALE_RUNNING_SECONDS", 180),
+        ("PDF_TASK_TIME_LIMIT_SECONDS", 45),
+    ],
+)
+def test_pdf_worker_limits_are_bounded(
     valid_settings_data: dict[str, Any], name: str, value: int
 ) -> None:
     with pytest.raises(ValidationError):

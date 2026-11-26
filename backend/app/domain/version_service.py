@@ -14,11 +14,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.report_schemas import DraftDetail, Page
-from app.api.version_schemas import PdfExportSummary, VersionDetail, VersionSummary
+from app.api.version_schemas import VersionDetail, VersionSummary
 from app.db.models import IdempotencyRecord, PdfExport, ReportVersion
 from app.db.repositories import get_report, get_version, list_versions_page
 from app.db.session import transaction
 from app.db.snapshots import parse_report_version_snapshot
+from app.domain.pdf_exports import _summary as pdf_export_summary
 from app.domain.reports import (
     InvalidCursor,
     ReportNotFound,
@@ -113,21 +114,7 @@ class VersionServices:
             analysis_result_id=(
                 version.analysis_result_id if version.snapshot_schema_version == 2 else None
             ),
-            latest_pdf_export=(
-                PdfExportSummary(
-                    id=export.id,
-                    report_id=export.report_id,
-                    version_id=export.version_id,
-                    template_version=export.template_version,
-                    input_identity=export.input_identity.hex(),
-                    state=export.state,
-                    attempt_count=export.attempt_count,
-                    created_at=export.created_at,
-                    updated_at=export.updated_at,
-                )
-                if export is not None
-                else None
-            ),
+            latest_pdf_export=(pdf_export_summary(export) if export is not None else None),
             created_at=version.created_at,
         )
 

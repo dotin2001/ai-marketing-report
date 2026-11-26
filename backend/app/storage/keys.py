@@ -38,13 +38,16 @@ class TrustedKeyBuilder:
         report_id: UUID,
         version_id: UUID,
         export_id: UUID,
+        attempt_ordinal: int = 1,
     ) -> ObjectIdentity:
+        if attempt_ordinal < 1:
+            raise ValueError("PDF attempt ordinal must be positive")
         return ObjectIdentity(
             environment=self.environment,
             bucket=self.bucket,
             key=(
                 f"v1/{self.environment}/owners/{owner_id}/reports/{report_id}/"
-                f"versions/{version_id}/pdf-exports/{export_id}/report.pdf"
+                f"versions/{version_id}/pdf-exports/{export_id}/attempts/{attempt_ordinal}/report.pdf"
             ),
             purpose=StoragePurpose.GENERATED_PDF,
         )
