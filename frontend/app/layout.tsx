@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "AI Marketing Report Assistant",
-  description: "Foundation workspace for validated marketing reporting.",
+  description: "Create and manage validated marketing reports.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

@@ -31,7 +31,9 @@ The backend consumes `APP_ENV`, `APP_HOST`, `APP_PORT`, `HEALTH_CHECK_TIMEOUT_SE
 
 Migration commands read the server-only `MIGRATION_DATABASE_URL`. PostgreSQL integration tests read the server-only `TEST_DATABASE_URL`; it must name a separate database ending in `_test`, use an approved local or CI host, differ from `DATABASE_URL`, and be used only with `APP_ENV=test`. Neither variable is loaded by the web-process `Settings` model or exposed to the frontend.
 
-The frontend consumes only `NEXT_PUBLIC_API_BASE_URL`. Never put a password, access key, database URL, Redis URL, or provider key in a `NEXT_PUBLIC_` variable.
+The frontend consumes only `NEXT_PUBLIC_API_BASE_URL`. Set it to the backend origin (for example, `http://127.0.0.1:8000`), without `/api/v1`. Next.js forwards browser requests under its same-origin `/api/v1/*` path to that origin. Never put a password, access key, database URL, Redis URL, or provider key in a `NEXT_PUBLIC_` variable.
+
+The report listing at `/` and creation page at `/reports/new` require an authenticated backend session. The backend currently returns `401` without an authenticated principal; the frontend displays a sign-in-required state and does not create an anonymous principal. For a local browser journey, use a backend test setup that supplies an authenticated principal. The list and creation requests use browser credentials on the same-origin API path.
 
 Stored source CSVs and generated PDFs are private objects. Their environment-scoped bucket/key identities remain backend-only and PostgreSQL records the owner, report, purpose, byte size, content type, and SHA-256 binding. A completed PDF is downloaded only through the authenticated `/api/v1/reports/{report_id}/versions/{version_id}/pdf-exports/{export_id}/download` boundary, which verifies the complete object before streaming it with private, no-store response headers. There is no public source-file download or object-list endpoint.
 
@@ -80,7 +82,8 @@ Start in this order from separate terminals where indicated:
 
 Default local endpoints are:
 
-- Frontend foundation page: <http://127.0.0.1:3000>
+- Frontend report listing: <http://127.0.0.1:3000/>
+- Frontend report creation: <http://127.0.0.1:3000/reports/new>
 - Backend liveness: <http://127.0.0.1:8000/health/live>
 - Backend readiness: <http://127.0.0.1:8000/health/ready>
 - PostgreSQL: `127.0.0.1:5432`
