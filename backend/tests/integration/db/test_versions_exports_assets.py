@@ -48,6 +48,7 @@ from app.db.repositories import (
 )
 from app.db.snapshots import ReportVersionSnapshot
 from app.db.testing import validate_test_database
+from app.domain.analysis_jobs import current_analysis_input
 from tests.integration.db.conftest import seed_report
 from tests.integration.db.test_datasets_and_metrics import seed_dataset_metric_aggregate
 
@@ -627,7 +628,9 @@ async def test_all_historical_resource_groups_reject_update_and_delete(
         )
     )
     assert draft is not None
-    semantic_identity = sha256(b"immutable-resource-groups-analysis").digest()
+    _draft, _dataset, _metrics, semantic_identity = await current_analysis_input(
+        db_session, report, draft.revision, dataset.id, metric_set.id
+    )
     job = await create_analysis_job(
         db_session,
         owner_id=report.owner_id,
@@ -652,7 +655,7 @@ async def test_all_historical_resource_groups_reject_update_and_delete(
         request_provenance="bounded computed metrics",
         numeric_source_identity=metric_set.identity,
     )
-    await finish_analysis_job(
+    assert await finish_analysis_job(
         db_session,
         owner_id=report.owner_id,
         report_id=report.id,

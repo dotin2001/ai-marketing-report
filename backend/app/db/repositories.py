@@ -67,6 +67,13 @@ class IdempotencyConflict(RuntimeError):
     """A scoped digest was reused for a different semantic command."""
 
 
+class JobNotRetryable(RuntimeError):
+    """The logical job has no eligible attempt remaining."""
+
+
+ANALYSIS_MAX_TOTAL_ATTEMPTS = 3
+
+
 @dataclass(frozen=True, slots=True)
 class SourceAssetAggregate:
     source: ReportSource
@@ -1092,6 +1099,46 @@ async def finish_analysis_job(
         ):
             raise ValueError("analysis result provenance does not match the logical job")
 
+        # Serialize attachment with edits to the active draft, then compare the
+        # complete semantic identity while both aggregate rows are locked.
+        report = await session.scalar(
+            select(Report)
+            .where(Report.owner_id == owner_id, Report.id == report_id)
+            .with_for_update()
+        )
+        active_draft = await session.scalar(
+            select(ReportDraft)
+            .where(
+                ReportDraft.owner_id == owner_id,
+                ReportDraft.report_id == report_id,
+                ReportDraft.is_active.is_(True),
+            )
+            .with_for_update()
+        )
+        fresh = False
+        if report is not None and active_draft is not None:
+            from app.domain.analysis_jobs import current_analysis_input
+
+            try:
+                _draft, _dataset, _metrics, identity = await current_analysis_input(
+                    session, report, job.draft_revision, job.dataset_id, job.metric_result_set_id
+                )
+                fresh = identity == job.semantic_input_identity
+            except ConcurrencyConflict:
+                pass
+        if not fresh:
+            await fail_analysis_job(
+                session,
+                owner_id=owner_id,
+                report_id=report_id,
+                job_id=job_id,
+                expected_attempt_count=expected_attempt_count,
+                failure_code="stale_result",
+                failure_message="Analysis input changed.",
+                retryable=False,
+            )
+            return False
+
         session.add(result)
         await session.flush()
         for item in items:
@@ -1127,33 +1174,12 @@ async def finish_analysis_job(
         job.current_result_id = result.id
         job.updated_at = now
 
-        report = await session.scalar(
-            select(Report)
-            .where(Report.owner_id == owner_id, Report.id == report_id)
-            .with_for_update()
-        )
-        active_draft = await session.scalar(
-            select(ReportDraft).where(
-                ReportDraft.owner_id == owner_id,
-                ReportDraft.report_id == report_id,
-                ReportDraft.is_active.is_(True),
-            )
-        )
-        is_fresh = (
-            report is not None
-            and active_draft is not None
-            and report.current_dataset_id == job.dataset_id
-            and report.current_metric_result_set_id == job.metric_result_set_id
-            and active_draft.id == job.draft_id
-            and active_draft.revision == job.draft_revision
-            and active_draft.objectives_revision == job.objectives_revision
-        )
-        if is_fresh and report is not None and active_draft is not None:
-            report.current_analysis_result_id = result.id
-            active_draft.current_analysis_result_id = result.id
-            active_draft.current_metric_result_set_id = job.metric_result_set_id
+        assert report is not None and active_draft is not None
+        report.current_analysis_result_id = result.id
+        active_draft.current_analysis_result_id = result.id
+        active_draft.current_metric_result_set_id = job.metric_result_set_id
         await session.flush()
-        return is_fresh
+        return True
 
 
 def _sanitized_failure(code: str, message: str) -> tuple[str, str]:
@@ -1252,8 +1278,6 @@ async def retry_analysis_job(
         if (
             report is None
             or draft is None
-            or job.state != "failed"
-            or job.failure_retryable is not True
             or job.attempt_count != expected_attempt_count
             or report.current_dataset_id != job.dataset_id
             or report.current_metric_result_set_id != job.metric_result_set_id
@@ -1261,6 +1285,10 @@ async def retry_analysis_job(
             or draft.revision != job.draft_revision
         ):
             raise ConcurrencyConflict("analysis retry state or input is stale")
+        if job.state != "failed":
+            raise ConcurrencyConflict("analysis retry state or input is stale")
+        if job.failure_retryable is not True or job.attempt_count >= ANALYSIS_MAX_TOTAL_ATTEMPTS:
+            raise JobNotRetryable("analysis job is not retryable")
         next_ordinal = expected_attempt_count + 1
         job.state = "queued"
         job.attempt_count = next_ordinal

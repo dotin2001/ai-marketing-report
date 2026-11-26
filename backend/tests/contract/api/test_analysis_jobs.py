@@ -24,7 +24,7 @@ from app.api.dependencies import AuthenticatedPrincipal, get_authenticated_princ
 from app.api.report_schemas import ErrorEnvelope, Page
 from app.core.config import Settings
 from app.core.resources import ResourceClients
-from app.db.repositories import ConcurrencyConflict, IdempotencyConflict
+from app.db.repositories import ConcurrencyConflict, IdempotencyConflict, JobNotRetryable
 from app.domain.assets import ResourceNotFound
 from app.domain.reports import InvalidCursor
 from app.main import create_app
@@ -57,7 +57,7 @@ class FakeJobs:
             JobFailure(
                 code="provider_unavailable",
                 message="Analysis could not be completed.",
-                retryable=True,
+                retryable=self.ordinal < 3,
             )
             if self.state == "failed"
             else None
@@ -166,6 +166,8 @@ class FakeJobs:
             return self._detail(), True
         if self.state != "failed" or command.expected_attempt_count != self.ordinal:
             raise ConcurrencyConflict
+        if self.ordinal >= 3:
+            raise JobNotRetryable
         self.retry_keys.add(key)
         self.ordinal += 1
         self.state = "queued"
@@ -276,6 +278,20 @@ def test_analysis_job_http_states_replay_retry_pagination_and_redaction(settings
             ).status_code
             == 409
         )
+        fake.state, fake.ordinal = "failed", 3
+        exhausted = client.post(
+            f"{base}/{fake.job_id}/retry",
+            json={"expected_attempt_count": 3},
+            headers={"Idempotency-Key": "retry-exhausted"},
+        )
+        assert (exhausted.status_code, exhausted.json()["error"]["code"]) == (
+            409,
+            "job_not_retryable",
+        )
+        ErrorEnvelope.model_validate(exhausted.json())
+        assert fake.ordinal == 3 and "retry-exhausted" not in fake.retry_keys
+        assert client.get(f"{base}/{fake.job_id}").json()["data"]["failure"]["retryable"] is False
+        assert client.get(base).json()["data"][0]["failure"]["retryable"] is False
         for response in (
             created,
             replay,

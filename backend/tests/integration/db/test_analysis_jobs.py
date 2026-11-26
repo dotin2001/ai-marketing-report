@@ -382,7 +382,116 @@ async def test_stale_running_attempt_cannot_accept_late_completion(
 
 
 @pytest.mark.asyncio
-async def test_late_analysis_result_is_retained_but_not_attached(
+async def test_completed_attempt_cannot_be_recovered_as_timed_out(
+    db_session: AsyncSession,
+) -> None:
+    report, _dataset, metric_set, _draft, job = await seed_analysis_job(
+        db_session, subject="analysis-completion-before-timeout"
+    )
+    assert await claim_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+    )
+    assert await finish_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=job.id,
+        expected_attempt_count=1,
+        result=analysis_result_for(report, metric_set, job),
+        items=[analysis_item_for(report)],
+    )
+    with pytest.raises(ConcurrencyConflict):
+        await fail_analysis_job(
+            db_session,
+            owner_id=report.owner_id,
+            report_id=report.id,
+            job_id=job.id,
+            expected_attempt_count=1,
+            failure_code="provider_timeout",
+            failure_message="Analysis timed out.",
+            retryable=True,
+        )
+    await db_session.refresh(job)
+    assert job.state == "succeeded" and job.current_result_id is not None
+    assert (
+        await db_session.scalar(
+            select(func.count()).select_from(AnalysisResult).where(AnalysisResult.job_id == job.id)
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_and_timeout_recovery_have_one_winner(
+    concurrent_engine: AsyncEngine,
+) -> None:
+    async with AsyncSession(concurrent_engine, expire_on_commit=False) as session:
+        async with session.begin():
+            report, _dataset, metric_set, _draft, job = await seed_analysis_job(
+                session, subject="completion-timeout-race"
+            )
+    async with AsyncSession(concurrent_engine) as session:
+        async with session.begin():
+            assert await claim_analysis_job(
+                session,
+                owner_id=report.owner_id,
+                report_id=report.id,
+                job_id=job.id,
+                expected_attempt_count=1,
+            )
+
+    async def complete() -> bool | ConcurrencyConflict:
+        try:
+            async with AsyncSession(concurrent_engine) as session:
+                async with session.begin():
+                    return await finish_analysis_job(
+                        session,
+                        owner_id=report.owner_id,
+                        report_id=report.id,
+                        job_id=job.id,
+                        expected_attempt_count=1,
+                        result=analysis_result_for(report, metric_set, job),
+                        items=[analysis_item_for(report)],
+                    )
+        except ConcurrencyConflict as error:
+            return error
+
+    async def recover() -> bool | ConcurrencyConflict:
+        try:
+            async with AsyncSession(concurrent_engine) as session:
+                async with session.begin():
+                    await fail_analysis_job(
+                        session,
+                        owner_id=report.owner_id,
+                        report_id=report.id,
+                        job_id=job.id,
+                        expected_attempt_count=1,
+                        failure_code="provider_timeout",
+                        failure_message="Analysis timed out.",
+                        retryable=True,
+                    )
+            return True
+        except ConcurrencyConflict as error:
+            return error
+
+    completion, recovery = await asyncio.gather(complete(), recover())
+    assert sum(value is True for value in (completion, recovery)) == 1
+    assert sum(isinstance(value, ConcurrencyConflict) for value in (completion, recovery)) == 1
+    async with AsyncSession(concurrent_engine) as session:
+        persisted = await session.get(AnalysisJob, job.id)
+        assert persisted is not None
+        count = await session.scalar(
+            select(func.count()).select_from(AnalysisResult).where(AnalysisResult.job_id == job.id)
+        )
+        assert (persisted.state, count) in {("succeeded", 1), ("failed", 0)}
+
+
+@pytest.mark.asyncio
+async def test_late_analysis_result_is_rejected_without_attachment(
     db_session: AsyncSession,
 ) -> None:
     report, _dataset, metric_set, draft, job = await seed_analysis_job(
@@ -415,9 +524,86 @@ async def test_late_analysis_result_is_retained_but_not_attached(
     await db_session.refresh(report)
     await db_session.refresh(draft)
     await db_session.refresh(job)
-    assert job.state == "succeeded" and job.current_result_id == result.id
+    assert job.state == "failed" and job.failure_code == "stale_result"
+    assert job.current_result_id is None
+    assert (
+        await db_session.scalar(
+            select(func.count()).select_from(AnalysisResult).where(AnalysisResult.job_id == job.id)
+        )
+        == 0
+    )
     assert report.current_analysis_result_id is None
     assert draft.current_analysis_result_id is None
+
+
+@pytest.mark.asyncio
+async def test_stale_second_analysis_preserves_prior_valid_result(
+    db_session: AsyncSession,
+) -> None:
+    report, dataset, metric_set, draft, first = await seed_analysis_job(
+        db_session, subject="analysis-retains-prior-result"
+    )
+    assert await claim_analysis_job(
+        db_session, owner_id=report.owner_id, report_id=report.id, job_id=first.id
+    )
+    previous = analysis_result_for(report, metric_set, first)
+    assert await finish_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=first.id,
+        expected_attempt_count=1,
+        result=previous,
+        items=[analysis_item_for(report)],
+    )
+    await save_draft_objectives(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        draft_id=draft.id,
+        expected_revision=1,
+        objectives=["Revised objective"],
+    )
+    await db_session.refresh(draft)
+    _draft, _dataset, _metrics, identity = await current_analysis_input(
+        db_session, report, draft.revision, dataset.id, metric_set.id
+    )
+    second = await create_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        semantic_input_identity=identity,
+        dataset_id=dataset.id,
+        metric_result_set_id=metric_set.id,
+        draft_id=draft.id,
+        draft_revision=draft.revision,
+        objectives_revision=draft.objectives_revision,
+    )
+    assert await claim_analysis_job(
+        db_session, owner_id=report.owner_id, report_id=report.id, job_id=second.id
+    )
+    await save_draft_objectives(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        draft_id=draft.id,
+        expected_revision=2,
+        objectives=["Newest objective"],
+    )
+    assert not await finish_analysis_job(
+        db_session,
+        owner_id=report.owner_id,
+        report_id=report.id,
+        job_id=second.id,
+        expected_attempt_count=1,
+        result=analysis_result_for(report, metric_set, second),
+        items=[analysis_item_for(report)],
+    )
+    await db_session.refresh(report)
+    await db_session.refresh(draft)
+    assert report.current_analysis_result_id == previous.id
+    assert draft.current_analysis_result_id == previous.id
+    assert draft.revision == 3
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,7 @@ from app.db.models import (
     ReportDraft,
 )
 from app.db.repositories import (
+    ANALYSIS_MAX_TOTAL_ATTEMPTS,
     ConcurrencyConflict,
     IdempotencyConflict,
     create_analysis_job,
@@ -79,7 +80,13 @@ def _summary(job: AnalysisJob) -> AnalysisJobSummary:
         attempt_count=job.attempt_count,
         created_at=job.created_at,
         updated_at=job.updated_at,
-        failure=_failure(job.failure_code, job.failure_message, job.failure_retryable),
+        failure=_failure(
+            job.failure_code,
+            job.failure_message,
+            job.failure_retryable is True and job.attempt_count < ANALYSIS_MAX_TOTAL_ATTEMPTS
+            if job.failure_retryable is not None
+            else None,
+        ),
     )
 
 
@@ -318,27 +325,48 @@ class AnalysisJobServices:
                 command_fingerprint=fingerprint,
             )
             replayed = record.result_id is not None
-            draft, dataset, metrics, identity = await self._current_input(
-                session,
-                report,
-                command.expected_revision,
-                command.dataset_id,
-                command.metric_result_set_id,
-            )
-            job = await create_analysis_job(
-                session,
-                owner_id=owner_id,
-                report_id=report_id,
-                semantic_input_identity=identity,
-                dataset_id=dataset.id,
-                metric_result_set_id=metrics.id,
-                draft_id=draft.id,
-                draft_revision=draft.revision,
-                objectives_revision=draft.objectives_revision,
-                idempotency=record,
-            )
+            new_attempt = False
+            if replayed:
+                if record.result_type != "analysis_job":
+                    raise IdempotencyConflict("idempotency result type changed")
+                assert record.result_id is not None
+                job = await self._job(session, owner_id, report_id, record.result_id)
+            else:
+                draft, dataset, metrics, identity = await self._current_input(
+                    session,
+                    report,
+                    command.expected_revision,
+                    command.dataset_id,
+                    command.metric_result_set_id,
+                )
+                await session.scalar(
+                    select(Report.id)
+                    .where(Report.id == report_id, Report.owner_id == owner_id)
+                    .with_for_update()
+                )
+                new_attempt = (
+                    await session.scalar(
+                        select(AnalysisJob.id).where(
+                            AnalysisJob.report_id == report_id,
+                            AnalysisJob.semantic_input_identity == identity,
+                        )
+                    )
+                    is None
+                )
+                job = await create_analysis_job(
+                    session,
+                    owner_id=owner_id,
+                    report_id=report_id,
+                    semantic_input_identity=identity,
+                    dataset_id=dataset.id,
+                    metric_result_set_id=metrics.id,
+                    draft_id=draft.id,
+                    draft_revision=draft.revision,
+                    objectives_revision=draft.objectives_revision,
+                    idempotency=record,
+                )
             detail = await _detail(session, job)
-        if job.state == "queued":
+        if new_attempt and job.state == "queued":
             self._dispatch(owner_id, report_id, job.id, job.attempt_count)
         return detail, replayed
 
@@ -489,7 +517,7 @@ class AnalysisJobServices:
                 )
                 await session.refresh(job)
             detail = await _detail(session, job)
-        if job.state == "queued":
+        if not replayed and job.state == "queued":
             self._dispatch(owner_id, report_id, job.id, job.attempt_count)
         return detail, replayed
 

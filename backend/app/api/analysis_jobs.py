@@ -16,7 +16,7 @@ from app.api.analysis_job_schemas import (
 from app.api.dependencies import AuthenticatedPrincipal, get_authenticated_principal
 from app.api.errors import APIError
 from app.api.report_schemas import ErrorEnvelope
-from app.db.repositories import ConcurrencyConflict, IdempotencyConflict
+from app.db.repositories import ConcurrencyConflict, IdempotencyConflict, JobNotRetryable
 from app.domain.analysis_jobs import AnalysisJobServices
 from app.domain.assets import ResourceNotFound
 from app.domain.reports import InvalidCursor
@@ -43,6 +43,10 @@ def key_conflict() -> APIError:
     return APIError(
         409, "idempotency_conflict", "The idempotency key was used for another command."
     )
+
+
+def not_retryable() -> APIError:
+    return APIError(409, "job_not_retryable", "The analysis job cannot be retried.")
 
 
 @router.post("", status_code=202, response_model=AnalysisJobEnvelope, responses=errors)
@@ -123,6 +127,8 @@ async def retry_analysis_job(
         raise not_found() from None
     except ConcurrencyConflict:
         raise conflict() from None
+    except JobNotRetryable:
+        raise not_retryable() from None
     except IdempotencyConflict:
         raise key_conflict() from None
     except ValueError:

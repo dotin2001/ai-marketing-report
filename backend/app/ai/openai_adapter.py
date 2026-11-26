@@ -78,11 +78,13 @@ class OpenAIAnalysisAdapter:
             raise AnalysisExecutionFailure("provider_unavailable", retryable=True) from error
         if _has_refusal(response):
             raise AnalysisExecutionFailure("provider_refusal", retryable=False)
-        if getattr(response, "status", None) != "completed":
-            raise AnalysisExecutionFailure("incomplete_response", retryable=True)
         parsed = getattr(response, "output_parsed", None)
+        if getattr(response, "status", None) != "completed":
+            if parsed is None:
+                raise AnalysisExecutionFailure("incomplete_response", retryable=True)
+            raise AnalysisExecutionFailure("invalid_structured_output", retryable=False)
         if parsed is None:
-            raise AnalysisExecutionFailure("incomplete_response", retryable=True)
+            raise AnalysisExecutionFailure("invalid_structured_output", retryable=False)
         model_id = getattr(response, "model", None)
         response_id = getattr(response, "id", None)
         if (

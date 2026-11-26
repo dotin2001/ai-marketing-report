@@ -234,8 +234,9 @@ async def test_adapter_sends_one_bounded_request_and_trusted_provenance(
     [
         (TimeoutError("secret prompt"), "provider_timeout", True),
         (RuntimeError("provider body secret"), "provider_unavailable", True),
-        (response(status="incomplete"), "incomplete_response", True),
-        (response(parsed=None), "incomplete_response", True),
+        (response(status="incomplete", parsed=None), "incomplete_response", True),
+        (response(status="incomplete"), "invalid_structured_output", False),
+        (response(parsed=None), "invalid_structured_output", False),
         (
             response(
                 output=[SimpleNamespace(type="message", content=[SimpleNamespace(type="refusal")])]
